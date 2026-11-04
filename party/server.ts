@@ -1,13 +1,21 @@
-import type * as Party from "partykit/server";
+/// <reference types="@cloudflare/workers-types" />
+import {
+  Server,
+  routePartykitRequest,
+  type Connection,
+  type ConnectionContext,
+} from "partyserver";
 import { buildWall, shuffle, sortTiles, type Tile } from "../src/tiles";
 
-// Slice 1 of the design in DESIGN.md:
+// Slice 1 of the design in DESIGN.md, on PartyServer (the PartyKit
+// successor: same Durable Object actor model, deployed with wrangler
+// to our own Cloudflare account):
 // - One room = one Durable Object = a single-threaded actor. Every
 //   command is serialized through onMessage, so the game has a total
 //   order of events by construction.
 // - Event-sourced: clients send commands, never state. A legal command
-//   appends an event to the log; state is the fold of that log (here
-//   kept materialized, with a snapshot in room storage).
+//   appends an event to the log; state is the fold of that log (kept
+//   materialized, snapshotted into the object's storage).
 // - Redaction: the full state (wall, all racks) never leaves this
 //   object. Each connection receives a per-seat view computed here.
 // - Commands carry a client-generated id (deduplicated: at-least-once
@@ -46,6 +54,13 @@ interface Command {
   type: string;
 }
 
+interface Env {
+  Mahjong: DurableObjectNamespace<Mahjong>;
+}
+
+type ConnState = { seat: number };
+type Conn = Connection<ConnState>;
+
 const MAX_SEATS = 4;
 const PROCESSED_CAP = 200;
 
@@ -61,18 +76,18 @@ function freshState(): GameState {
   };
 }
 
-export default class MahjongServer implements Party.Server {
+export class Mahjong extends Server<Env> {
+  static options = { hibernate: true };
+
   state: GameState = freshState();
 
-  constructor(readonly room: Party.Room) {}
-
   async onStart() {
-    const saved = await this.room.storage.get<GameState>("state");
+    const saved = await this.ctx.storage.get<GameState>("state");
     if (saved) this.state = saved;
   }
 
   async persist() {
-    await this.room.storage.put("state", this.state);
+    await this.ctx.storage.put("state", this.state);
   }
 
   /** The redacted projection for one seat. This is the ONLY game data
@@ -94,14 +109,17 @@ export default class MahjongServer implements Party.Server {
     };
   }
 
+  seatOf(conn: Conn): number {
+    return (conn.state as ConnState | null)?.seat ?? -1;
+  }
+
   broadcastViews() {
-    for (const conn of this.room.getConnections()) {
-      const seat = (conn.state as { seat?: number } | null)?.seat ?? -1;
-      conn.send(JSON.stringify(this.viewFor(seat)));
+    for (const conn of this.getConnections<ConnState>()) {
+      conn.send(JSON.stringify(this.viewFor(this.seatOf(conn))));
     }
   }
 
-  async onConnect(conn: Party.Connection, ctx: Party.ConnectionContext) {
+  async onConnect(conn: Conn, ctx: ConnectionContext) {
     const url = new URL(ctx.request.url);
     const token = url.searchParams.get("token") ?? "";
     const name = url.searchParams.get("name") ?? "Player";
@@ -128,15 +146,19 @@ export default class MahjongServer implements Party.Server {
 
     conn.setState({ seat: seatIdx });
     conn.send(
-      JSON.stringify({ type: "seated", seat: seatIdx, token: s.seats[seatIdx].token })
+      JSON.stringify({
+        type: "seated",
+        seat: seatIdx,
+        token: s.seats[seatIdx].token,
+      })
     );
     await this.persist();
     this.broadcastViews();
   }
 
-  async onClose(conn: Party.Connection) {
-    const seatIdx = (conn.state as { seat?: number } | null)?.seat;
-    if (seatIdx !== undefined && this.state.seats[seatIdx]) {
+  async onClose(conn: Conn) {
+    const seatIdx = this.seatOf(conn);
+    if (seatIdx >= 0 && this.state.seats[seatIdx]) {
       this.state.seats[seatIdx].connected = false;
       await this.persist();
       this.broadcastViews();
@@ -147,8 +169,8 @@ export default class MahjongServer implements Party.Server {
     this.state.log.push({ seq: this.state.log.length + 1, type, seat, detail });
   }
 
-  async onMessage(message: string, sender: Party.Connection) {
-    const seatIdx = (sender.state as { seat?: number } | null)?.seat ?? -1;
+  async onMessage(conn: Conn, message: string | ArrayBuffer) {
+    const seatIdx = this.seatOf(conn);
     let cmd: Command;
     try {
       cmd = JSON.parse(message as string) as Command;
@@ -159,21 +181,21 @@ export default class MahjongServer implements Party.Server {
 
     // Idempotency: a retried command is acknowledged, not re-applied.
     if (s.processedIds.includes(cmd.id)) {
-      sender.send(JSON.stringify({ type: "ack", id: cmd.id, version: s.version }));
-      sender.send(JSON.stringify(this.viewFor(seatIdx)));
+      conn.send(JSON.stringify({ type: "ack", id: cmd.id, version: s.version }));
+      conn.send(JSON.stringify(this.viewFor(seatIdx)));
       return;
     }
     // Optimistic concurrency: the client acted on a stale version.
     if (cmd.baseVersion !== s.version) {
-      sender.send(JSON.stringify({ type: "stale", id: cmd.id }));
-      sender.send(JSON.stringify(this.viewFor(seatIdx)));
+      conn.send(JSON.stringify({ type: "stale", id: cmd.id }));
+      conn.send(JSON.stringify(this.viewFor(seatIdx)));
       return;
     }
 
     let applied = false;
     if (cmd.type === "start" && s.phase === "lobby" && s.seats.length > 0) {
       // Trusted shuffle, then a simple sequential deal (the ceremonial
-      // 4-4-4-1 wall break is cosmetic; slice 2 can add it).
+      // 4-4-4-1 wall break is cosmetic; a later slice can add it).
       s.wall = shuffle(buildWall());
       s.hands = s.seats.map(() => s.wall.splice(0, 13));
       s.hands[0].push(...s.wall.splice(0, 1)); // East starts with 14
@@ -195,14 +217,21 @@ export default class MahjongServer implements Party.Server {
         s.processedIds = s.processedIds.slice(-PROCESSED_CAP);
       }
       await this.persist();
-      sender.send(JSON.stringify({ type: "ack", id: cmd.id, version: s.version }));
+      conn.send(JSON.stringify({ type: "ack", id: cmd.id, version: s.version }));
       this.broadcastViews();
     } else {
-      sender.send(
+      conn.send(
         JSON.stringify({ type: "rejected", id: cmd.id, version: s.version })
       );
     }
   }
 }
 
-MahjongServer satisfies Party.Worker;
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    return (
+      (await routePartykitRequest(request, env)) ??
+      new Response("Not found", { status: 404 })
+    );
+  },
+};
