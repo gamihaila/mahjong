@@ -26,21 +26,17 @@ const pos = (i: number): [number, number] => [XS[i % 3], YS[Math.floor(i / 3)]];
 function DotPip({ x, y, color }: { x: number; y: number; color: string }) {
   return (
     <g>
-      <circle cx={x} cy={y} r={6.8} fill={color} />
-      <circle cx={x} cy={y} r={4.3} fill="#fffdf5" />
+      <circle cx={x} cy={y} r={6.4} fill="none" stroke={color} strokeWidth={2.2} />
       <circle cx={x} cy={y} r={2.2} fill={color} />
     </g>
   );
 }
 
-function BamPip({ x, y, accent }: { x: number; y: number; accent: boolean }) {
-  const fill = accent ? "#dc2626" : "#16a34a";
-  const node = accent ? "#7f1d1d" : "#14532d";
+function BamPip({ x, y }: { x: number; y: number }) {
   return (
-    <g>
-      <rect x={x - 3.4} y={y - 9.5} width={6.8} height={8.6} rx={3.2} fill={fill} />
-      <rect x={x - 3.4} y={y + 0.9} width={6.8} height={8.6} rx={3.2} fill={fill} />
-      <line x1={x - 3.4} y1={y - 0.4} x2={x + 3.4} y2={y - 0.4} stroke={node} strokeWidth={1.1} />
+    <g fill="#16a34a">
+      <rect x={x - 3.4} y={y - 9.5} width={6.8} height={8.8} rx={3.2} />
+      <rect x={x - 3.4} y={y + 0.7} width={6.8} height={8.8} rx={3.2} />
     </g>
   );
 }
@@ -52,7 +48,6 @@ function OneBam() {
     <g>
       <path d="M30 34 C 19 30, 12 21, 13 10 C 22 14, 28 21, 30 28 Z" fill="#22c55e" />
       <path d="M30 34 C 41 30, 48 21, 47 10 C 38 14, 32 21, 30 28 Z" fill="#16a34a" />
-      <path d="M27 52 C 18 50, 13 44, 13 37 C 20 39, 25 44, 27 48 Z" fill="#22c55e" />
       <rect x={25.6} y={30} width={8.8} height={13} rx={4} fill="#16a34a" />
       <rect x={25.6} y={45.5} width={8.8} height={13} rx={4} fill="#22c55e" />
       <rect x={25.6} y={61} width={8.8} height={13} rx={4} fill="#15803d" />
@@ -66,12 +61,10 @@ function SuitPips({ tile }: { tile: Tile }) {
   if (suit === "b" && rank === 1) return <OneBam />;
   if (suit === "t" && rank === 1) {
     return (
-      <g>
-        <circle cx={30} cy={42} r={17} fill="#1d4ed8" />
-        <circle cx={30} cy={42} r={12.5} fill="#fffdf5" />
-        <circle cx={30} cy={42} r={9} fill="#3b82f6" />
-        <circle cx={30} cy={42} r={5} fill="#fffdf5" />
-        <circle cx={30} cy={42} r={2.6} fill="#1e3a8a" />
+      <g fill="none" stroke="#1d4ed8">
+        <circle cx={30} cy={42} r={15.5} strokeWidth={3} />
+        <circle cx={30} cy={42} r={7.5} strokeWidth={2.2} />
+        <circle cx={30} cy={42} r={2.8} fill="#1d4ed8" stroke="none" />
       </g>
     );
   }
@@ -82,7 +75,7 @@ function SuitPips({ tile }: { tile: Tile }) {
         return suit === "t" ? (
           <DotPip key={i} x={x} y={y} color="#1d4ed8" />
         ) : (
-          <BamPip key={i} x={x} y={y} accent={false} />
+          <BamPip key={i} x={x} y={y} />
         );
       })}
     </g>
