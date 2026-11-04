@@ -290,6 +290,21 @@ export class Mahjong extends Server<Env> {
     } else if (saved) {
       await this.ctx.storage.delete("state");
     }
+    // Restore the bots' pending cues WITH their original due
+    // times. The queue used to live only in memory, so every
+    // wake re-delayed each cue by a fresh human-pace delay — and
+    // a wake arriving at a cue's own deadline (the alarm that
+    // woke the object was that cue's) found nothing due, re-armed,
+    // and could repeat the cycle indefinitely under hibernation
+    // churn: the cue never fired. The escrow deadline was always
+    // persisted as an absolute time; the bot queue now is too.
+    const savedQueue =
+      await this.ctx.storage.get<[number, { key: string; at: number }][]>(
+        "botq"
+      );
+    if (Array.isArray(savedQueue)) {
+      this.botQueue = new Map(savedQueue);
+    }
     await this.driveBots();
   }
 
@@ -1134,6 +1149,14 @@ export class Mahjong extends Server<Env> {
     const w = this.state.play?.window;
     if (w?.escrow) times.push(w.escrow.deadline);
     for (const e of this.botQueue.values()) times.push(e.at);
+    // Persist the queue alongside the arming (see onStart): due
+    // times are absolute and must survive the object sleeping.
+    try {
+      await this.ctx.storage.put("botq", [...this.botQueue.entries()]);
+    } catch {
+      // A lost queue snapshot only costs a re-derivation on the
+      // next wake; never let it break the arming itself.
+    }
     try {
       if (times.length > 0) {
         await this.ctx.storage.setAlarm(Math.min(...times));
