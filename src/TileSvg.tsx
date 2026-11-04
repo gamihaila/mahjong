@@ -22,7 +22,6 @@ const LAYOUTS: Record<number, number[]> = {
 };
 const pos = (i: number): [number, number] => [XS[i % 3], YS[Math.floor(i / 3)]];
 
-const DOT_COLORS = ["#1d4ed8", "#16a34a", "#dc2626"];
 
 function DotPip({ x, y, color }: { x: number; y: number; color: string }) {
   return (
@@ -56,7 +55,7 @@ function OneBam() {
       <path d="M27 52 C 18 50, 13 44, 13 37 C 20 39, 25 44, 27 48 Z" fill="#22c55e" />
       <rect x={25.6} y={30} width={8.8} height={13} rx={4} fill="#16a34a" />
       <rect x={25.6} y={45.5} width={8.8} height={13} rx={4} fill="#22c55e" />
-      <rect x={25.6} y={61} width={8.8} height={13} rx={4} fill="#dc2626" />
+      <rect x={25.6} y={61} width={8.8} height={13} rx={4} fill="#15803d" />
     </g>
   );
 }
@@ -70,9 +69,9 @@ function SuitPips({ tile }: { tile: Tile }) {
       <g>
         <circle cx={30} cy={42} r={17} fill="#1d4ed8" />
         <circle cx={30} cy={42} r={12.5} fill="#fffdf5" />
-        <circle cx={30} cy={42} r={9} fill="#dc2626" />
+        <circle cx={30} cy={42} r={9} fill="#3b82f6" />
         <circle cx={30} cy={42} r={5} fill="#fffdf5" />
-        <circle cx={30} cy={42} r={2.6} fill="#16a34a" />
+        <circle cx={30} cy={42} r={2.6} fill="#1e3a8a" />
       </g>
     );
   }
@@ -81,9 +80,9 @@ function SuitPips({ tile }: { tile: Tile }) {
       {LAYOUTS[rank].map((cell, i) => {
         const [x, y] = pos(cell);
         return suit === "t" ? (
-          <DotPip key={i} x={x} y={y} color={DOT_COLORS[i % 3]} />
+          <DotPip key={i} x={x} y={y} color="#1d4ed8" />
         ) : (
-          <BamPip key={i} x={x} y={y} accent={rank === 5 && cell === C} />
+          <BamPip key={i} x={x} y={y} accent={false} />
         );
       })}
     </g>
@@ -190,6 +189,7 @@ function Joker() {
 }
 
 export function TileSvg({ tile }: { tile: Tile }) {
+  const suited = "bt".includes(tile[0]) && tile.length === 2;
   return (
     <svg viewBox="0 0 60 84" role="img" aria-label={tile} preserveAspectRatio="xMidYMid meet">
       {"btc".includes(tile[0]) && tile.length === 2 ? (
@@ -206,6 +206,11 @@ export function TileSvg({ tile }: { tile: Tile }) {
         <Flower />
       ) : (
         <Joker />
+      )}
+      {suited && (
+        <text x={4.5} y={12.5} fontSize={9} fontWeight={700} fill="#57534e">
+          {tile.slice(1)}
+        </text>
       )}
     </svg>
   );
