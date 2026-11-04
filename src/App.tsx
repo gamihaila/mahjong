@@ -375,6 +375,21 @@ export default function App() {
               )}
             </div>
           )}
+          {view.seats.some((s, i) => !s.bot && !s.connected && i !== view.you) && (
+            <div className="row">
+              {view.seats.map((s, i) =>
+                !s.bot && !s.connected && i !== view.you ? (
+                  <button
+                    key={i}
+                    className="quiet"
+                    onClick={() => send("removeSeat", { seat: i })}
+                  >
+                    Remove {s.name} (away)
+                  </button>
+                ) : null
+              )}
+            </div>
+          )}
         </section>
       )}
 

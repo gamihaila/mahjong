@@ -290,7 +290,7 @@ export class Mahjong extends Server<Env> {
     } else if (saved) {
       await this.ctx.storage.delete("state");
     }
-    this.driveBots();
+    await this.driveBots();
   }
 
   async persist() {
@@ -613,7 +613,7 @@ export class Mahjong extends Server<Env> {
       await this.resolveWindow();
     }
     await this.runDueBots();
-    this.driveBots();
+    await this.driveBots();
   }
 
   async onMessage(conn: Conn, message: string | ArrayBuffer) {
@@ -626,7 +626,7 @@ export class Mahjong extends Server<Env> {
     await this.dispatchCommand(this.seatOf(conn), cmd, (obj) =>
       conn.send(JSON.stringify(obj))
     );
-    this.driveBots();
+    await this.driveBots();
   }
 
   /** One command through the full pipeline — idempotency, version
@@ -681,20 +681,35 @@ export class Mahjong extends Server<Env> {
       this.appendEvent("add-bot", s.seats.length - 1, name);
       applied = true;
     } else if (
-      cmd.type === "removeBot" &&
+      (cmd.type === "removeBot" || cmd.type === "removeSeat") &&
       s.phase === "lobby" &&
       cmd.seat !== undefined &&
-      s.seats[cmd.seat]?.bot
+      cmd.seat !== seatIdx
     ) {
-      const [gone] = s.seats.splice(cmd.seat, 1);
-      // Human connections seated behind the removed bot shift
-      // down one index with the array.
-      for (const conn of this.getConnections<ConnState>()) {
-        const cs = conn.state as ConnState | null;
-        if (cs && cs.seat > cmd.seat) conn.setState({ seat: cs.seat - 1 });
+      // removeBot takes out a bot; removeSeat takes out any seat
+      // that cannot object — a bot, or a human who has disconnected
+      // (their browser closed and the seat would otherwise squat in
+      // the room forever, blocking the deal).
+      const target = s.seats[cmd.seat];
+      const removable =
+        target &&
+        (cmd.type === "removeBot"
+          ? target.bot === true
+          : target.bot === true || target.connected === false);
+      if (removable) {
+        const [gone] = s.seats.splice(cmd.seat, 1);
+        // Connections seated behind the removed seat shift down one
+        // index with the array; a connection somehow still holding
+        // the removed seat is unseated.
+        for (const conn of this.getConnections<ConnState>()) {
+          const cs = conn.state as ConnState | null;
+          if (cs && cs.seat === cmd.seat) conn.setState({ seat: -1 });
+          else if (cs && cs.seat > cmd.seat)
+            conn.setState({ seat: cs.seat - 1 });
+        }
+        this.appendEvent("remove-seat", cmd.seat, gone.name);
+        applied = true;
       }
-      this.appendEvent("remove-bot", cmd.seat, gone.name);
-      applied = true;
     } else if (cmd.type === "start" && s.phase === "lobby" && s.seats.length > 0) {
       // Trusted shuffle, then a simple sequential deal (the ceremonial
       // 4-4-4-1 wall break is cosmetic; a later slice can add it).
@@ -1078,8 +1093,13 @@ export class Mahjong extends Server<Env> {
    *  for the earliest thing due — a bot action or the escrow
    *  deadline. Called after every state change; cheap and
    *  idempotent. Delays are human-paced, and a window response
-   *  always lands inside the escrow grace. */
-  driveBots() {
+   *  always lands inside the escrow grace. The arming is awaited
+   *  by every caller: a fire-and-forget setAlarm can be lost when
+   *  the object hibernates the instant the handler returns (this
+   *  bit live: both humans agreed to a void, the bots' cue was
+   *  queued, and the room then sat silent and idle — the alarm
+   *  never landed, so the bots never voted). */
+  async driveBots() {
     const s = this.state;
     for (let seat = 0; seat < s.seats.length; seat++) {
       const key = s.seats[seat].bot ? this.botObligation(seat) : null;
@@ -1107,7 +1127,7 @@ export class Mahjong extends Server<Env> {
         this.botQueue.set(seat, { key, at: Date.now() + delay });
       }
     }
-    void this.armAlarm();
+    await this.armAlarm();
   }
 
   async armAlarm() {
