@@ -1,0 +1,118 @@
+# 2026 card — DRAFT transcription, UNVERIFIED
+#
+# Source: George's screenshot (2026-11-04) of a third-party printed
+# "2026 Mahjong Hand Tracker". This is a transcription of that tracker,
+# not of the NMJL card itself; the tracker may differ from the official
+# card. Status: draft for George's verification against the app/card.
+#
+# Format (one hand per line):
+#   <X|C><points> <groups...> :: <note, verbatim from the tracker>
+#   X = exposed hand allowed, C = concealed hand only.
+#   Groups are separated by spaces, exactly as printed.
+#   Each group carries the color it is printed in, as a one-letter
+#   prefix: b = blue, g = green, r = red. Same prefix within a hand =
+#   same suit. Flowers (F) and winds (N/E/S/W) have no suit; their
+#   prefixes are transcribed as printed but carry no suit meaning.
+#   Digits are tile ranks as printed; 0 is the soap (white dragon)
+#   used as zero. D = a dragon of the suit its color indicates.
+#   Every hand must total 14 tiles; in this notation each character
+#   of a group is one tile (e.g. NEWS = 4, 113579 = 6, 1D = 2).
+#   Tile counts were machine-validated after transcription: all 72
+#   hands below total 14. Color prefixes were read from a photograph
+#   and are the most error-prone part.
+#   Provisional ruling (George, 2026-11-04): on three hands the photo
+#   showed three colors while the note said "Any 2 Suits"; the note
+#   won — the third color was folded into the second suit. Those
+#   hands: FF 2222 44 66 8888 (2468); 1111 D 111 D 1111 D (Any Like
+#   Numbers); 1111 33 55 77 9999 (13579). The official card, when it
+#   arrives, supersedes this whole file.
+
+## 2026
+X25 r222 b000 r2222 r6666 :: Any 2 Suits.
+X25 g2026 gDDD r2222 rDDD :: Any 2 Suits, w Matching Dragons, Kong 2 or 6.
+X25 bFFF g2026 r222 b6666 :: Any 3 Suits.
+X25 g22 b00 r222 r666 bNEWS :: Any 2 Suits.
+
+## 2468
+X25 b222 b444 b6666 b8888 :: Any 1 Suit.
+X25 g222 g444 r6666 r8888 :: Any 2 Suits
+X30 bFF b2222 r44 r66 r8888 :: Any 2 Suits
+X30 bEE b22 b444 b666 b88 bWW :: Any 1 Suit, East and West Only.
+X25 g2222 gDDD r8888 rDDD :: Any 2 Suits w Matching Dragon, These Nos. Only.
+X25 bFFF b22 b44 b666 b8888 :: Any 1 Suit.
+X25 g2468 r2222 rD b2222 bD :: Any 3 Suits, Like Kongs, 2, 4, 6, or 8 w Matching Dragons.
+X30 bFFF g2468 bFFF r2222 :: Any 2 Suits, Kongs, 2, 4, 6, or 8.
+C30 bFF g246 g888 r246 r888 :: Any 2 Suits.
+
+## ANY LIKE NUMBERS
+X30 g1111 bFFFFFF r1111 :: Any 2 Suits
+X25 g1111 gD r111 rD r1111 rD :: Any 2 Suits w Matching Dragon.
+X25 bFF b1111 r11 b1111 gDD :: Any 3 Suits w Any Dragon.
+
+## QUINTS
+X40 g11111 r1111 b11111 :: Any 3 Suits, Any Like Nos.
+X45 bFF b11111 b22 b33333 :: Any 1 Suit, Any 3 Consecutive Nos.
+X40 g11111 g44444 rDDDD :: Any 2 Numbers, in Any 1 Suit with Opposite, Dragon.
+
+## CONSECUTIVE RUN
+X25 b11 b222 b33 b444 b5555 :: Any 1 Suit, These Numbers Only.
+X25 b55 b666 b77 b888 b9999 :: Any 1 Suit, These Numbers Only.
+X25 bFFF b1111 b234 b5555 :: Any 1 Suit, Any 5 Consecutive Numbers.
+X25 bFFF g1111 r234 g5555 :: Any 2 Suits, Any 5 Consecutive Numbers.
+X25 b11 b22 r111 r222 b3333 :: Any 3 Suits, Any 3 Consecutive Numbers.
+X25 b111 b222 b3333 b4444 :: Any 1 Suit, Any 4 Consecutive Numbers.
+X25 g111 g222 r3333 r4444 :: Any 2 Suits, Any 4 Consecutive Numbers.
+X25 bFFF b11 b22 b333 bDDDD :: 1 Suit, Any Run, Dragons Match Middle No.
+X25 bFFF b11 r22 b333 rDDDD :: 2 Suits, Any Run, Dragons Match Middle No.
+X30 b1111 bFFFFFF b2222 :: Any 1 Suit, Any 2 Consecutive Numbers.
+X25 bFF b1111 b2222 b3333 :: Any 1 Suit, Any 3 Consecutive Numbers.
+X25 bFF g1111 r2222 b3333 :: Any 3 Suits, Any 3 Consecutive Numbers.
+C35 g1 g22 g333 r1 r22 r333 b44 :: Any 3 Suits, Any 4 Consecutive Numbers.
+
+## 13579
+X25 b11 b333 b55 b777 b9999 :: Any 1 Suit
+X25 g11 g333 r55 r777 b9999 :: Any 3 Suits
+X25 g111 g333 r3333 r5555 :: Any 2 Suits
+X25 g555 g777 r7777 r9999 :: Any 2 suits
+X30 bNN b1111 b33 b5555 bSS :: Any 1 Suit, North and South Only.
+X30 bNN b5555 b77 b9999 bSS :: Any 1 Suit, North and South Only.
+X25 b113579 r1111 g1111 :: Any 3 Suits, Pair Any Odd No., Kongs Math Pair.
+X25 bFFF b11 b33 b555 bDDDD :: Any 1 Suit w Matching Dragon.
+X25 bFFF b55 b77 b999 bDDDD :: Any 1 Suit w Matching Dragon.
+X25 g11 g33 r111 r333 b5555 :: Any 3 Suits
+X25 g55 g77 r555 r777 b9999 :: Any 3 Suits
+X30 b1111 b33 b55 b77 b9999 :: Any 1 Suit
+X30 b1111 r33 r55 r77 r9999 :: Any 2 Suits
+C35 bFF b11 b33 b55 r111 g111 :: Any 3 Suits, These Numbers Only.
+C35 bFF b55 b77 b99 r555 g555 :: Any 3 Suits, These Numbers Only.
+C30 bFF b135 b777 b999 rDDD :: Any 1 Suit w Opp, Dragon.
+
+## WINDS + DRAGONS
+X25 bNNNN bEEE bWWW bSSSS :: (no note printed; value confirmed by George 2026-11-04)
+X25 bNNN bEEEE bWWWW bSSS ::
+X25 b1234 gDDD rDDD bDDDD :: Any 4 Consecutive Number in Any 1 Suit, Any 3 Dragons.
+X25 bNNN g1111 r1111 bSSS :: Any Like Odd Numbers in Any 2 Suits.
+X25 bEEE g2222 r2222 bWWW :: Any Like Even Numbers in Any 2 Suits.
+X25 bFFF bNNNN bFFF bDDDD :: Any Wind Any Dragon.
+X25 b1 bN b2 bEE b3 bWWW b4 bSSSS :: Any 1 Suit, These Numbers Only.
+X25 bFF bNNNN bSSSS gDD rDD :: Any 2 Dragons.
+X25 bFF bEEEE bWWWW gDD rDD :: Any 2 Dragons.
+C30 bNN bEEE b2026 bWWW bSS :: 2026 Any 1 Suit.
+
+## 369
+X25 g333 g666 r6666 r9999 :: Any 2 Suits
+X25 g333 g666 r6666 b9999 :: Any 3 Suits
+X25 g33 g66 r333 r666 b9999 :: Any 3 Suits
+X25 bFFF b33 b666 b99 bDDDD :: 1 Suit w Matching Dragon.
+X25 bFFF b33 b666 b99 rDDDD :: 1 Suit w Opp, Dragon.
+X30 g33 g66 r666 r999 bNEWS :: Any 2 Suits
+X25 bFF g3369 r3333 b3333 :: Any 3 Suits, Pair 3, 6, or 9, Kongs Match Pair
+C30 bFF g333 g666 g999 r369 :: Any 2 Suits
+
+## SINGLES + PAIRS
+C50 bNN bEE bWW bSS g1D r1D b1D :: Any 3 Suits, Any Like No., w Matching Dragon.
+C50 g2 g4 g66 g88 r2 r4 r66 r88 b88 :: Any 3 Suits, These Numbers Only.
+C50 bFF g3369 r3669 b3699 :: Any 3 Suits.
+C50 b11 b22 b33 b44 b55 b66 b77 :: Any 1 Suit, Any 7 Consecutive Numbers.
+C50 g11 g357 g99 r11 r357 r99 :: Any 2 Suits.
+C75 bFF g2026 r2026 b2026 :: Any 3 Suits.
