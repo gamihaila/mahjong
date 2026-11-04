@@ -623,9 +623,6 @@ export class Mahjong extends Server<Env> {
   /** The alarm is shared: the escrow grace expiring (claims, if
    *  any, preempt the draw) and bot actions falling due. */
   async onAlarm() {
-    console.log(
-      `CUE alarm now=${Date.now()} queue=${JSON.stringify([...this.botQueue.entries()])}`
-    );
     const w = this.state.play?.window;
     if (w?.escrow && Date.now() >= w.escrow.deadline) {
       await this.resolveWindow();
@@ -1148,9 +1145,6 @@ export class Mahjong extends Server<Env> {
         // deliver tens of seconds late (measured: 7-59s stalls).
         const at = Math.ceil(Date.now() + delay);
         this.botQueue.set(seat, { key, at });
-        console.log(
-          `CUE created seat=${seat} key=${key} at=${at} now=${Date.now()}`
-        );
       }
     }
     await this.armAlarm();
@@ -1161,7 +1155,6 @@ export class Mahjong extends Server<Env> {
     const w = this.state.play?.window;
     if (w?.escrow) times.push(w.escrow.deadline);
     for (const e of this.botQueue.values()) times.push(e.at);
-    console.log(`CUE arm times=${JSON.stringify(times)} now=${Date.now()}`);
     // Persist the queue alongside the arming (see onStart): due
     // times are absolute and must survive the object sleeping.
     try {
@@ -1205,9 +1198,6 @@ export class Mahjong extends Server<Env> {
         this.noteBotFailure(sig);
         continue;
       }
-      console.log(
-        `CUE exec seat=${seat} key=${entry.key} dueAt=${entry.at} lateMs=${Date.now() - entry.at}`
-      );
       const applied = await this.dispatchCommand(
         seat,
         {
