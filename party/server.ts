@@ -290,7 +290,7 @@ export class Mahjong extends Server<Env> {
     } else if (saved) {
       await this.ctx.storage.delete("state");
     }
-    this.driveBots();
+    await this.driveBots();
   }
 
   async persist() {
@@ -613,7 +613,7 @@ export class Mahjong extends Server<Env> {
       await this.resolveWindow();
     }
     await this.runDueBots();
-    this.driveBots();
+    await this.driveBots();
   }
 
   async onMessage(conn: Conn, message: string | ArrayBuffer) {
@@ -626,7 +626,7 @@ export class Mahjong extends Server<Env> {
     await this.dispatchCommand(this.seatOf(conn), cmd, (obj) =>
       conn.send(JSON.stringify(obj))
     );
-    this.driveBots();
+    await this.driveBots();
   }
 
   /** One command through the full pipeline — idempotency, version
@@ -1078,8 +1078,13 @@ export class Mahjong extends Server<Env> {
    *  for the earliest thing due — a bot action or the escrow
    *  deadline. Called after every state change; cheap and
    *  idempotent. Delays are human-paced, and a window response
-   *  always lands inside the escrow grace. */
-  driveBots() {
+   *  always lands inside the escrow grace. The arming is awaited
+   *  by every caller: a fire-and-forget setAlarm can be lost when
+   *  the object hibernates the instant the handler returns (this
+   *  bit live: both humans agreed to a void, the bots' cue was
+   *  queued, and the room then sat silent and idle — the alarm
+   *  never landed, so the bots never voted). */
+  async driveBots() {
     const s = this.state;
     for (let seat = 0; seat < s.seats.length; seat++) {
       const key = s.seats[seat].bot ? this.botObligation(seat) : null;
@@ -1107,7 +1112,7 @@ export class Mahjong extends Server<Env> {
         this.botQueue.set(seat, { key, at: Date.now() + delay });
       }
     }
-    void this.armAlarm();
+    await this.armAlarm();
   }
 
   async armAlarm() {
