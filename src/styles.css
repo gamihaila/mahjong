@@ -91,3 +91,78 @@ body {
   cursor: pointer;
 }
 .actions button:hover { background: #fde047; }
+
+/* Charleston (slice 2) */
+.tile.selected {
+  outline: 3px solid #facc15;
+  outline-offset: -3px;
+  transform: translateY(-8px);
+}
+.tile[role="button"] { cursor: pointer; }
+
+.charleston {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 15px;
+}
+.char-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.waiting-time { opacity: 0.75; font-variant-numeric: tabular-nums; }
+.pass-status {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+.pass-status li { display: flex; align-items: center; gap: 6px; }
+.blind-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.blind-row button {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  border: none;
+  font-size: 18px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.9);
+  color: #14532d;
+  cursor: pointer;
+}
+.blind-row button:disabled { opacity: 0.35; cursor: default; }
+.char-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.char-actions .primary {
+  font-size: 16px;
+  font-weight: 600;
+  padding: 10px 22px;
+  border-radius: 999px;
+  border: none;
+  background: #facc15;
+  color: #422006;
+  cursor: pointer;
+}
+.char-actions .primary:disabled { opacity: 0.4; cursor: default; }
+.char-actions .quiet {
+  background: none;
+  border: none;
+  color: #f8fafc;
+  opacity: 0.7;
+  font-size: 14px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.void-box button {
+  border: none;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.9);
+  color: #14532d;
+  cursor: pointer;
+}
