@@ -136,11 +136,10 @@ button.quiet {
   gap: 2px;
   color: #1c1917;
   user-select: none;
-  padding: 0;
+  padding: 3px;
 }
+.tile svg { width: 100%; height: 100%; display: block; }
 button.tile:hover { background: linear-gradient(180deg, #fffdf5, #f1ead2); }
-.tile-face { font-size: 30px; line-height: 1; }
-.tile-label { font-size: 10px; font-weight: 600; letter-spacing: 0.02em; }
 .tile.selected {
   outline: 3px solid #facc15;
   outline-offset: -3px;
@@ -155,11 +154,7 @@ button.tile:hover { background: linear-gradient(180deg, #fffdf5, #f1ead2); }
   box-shadow: 0 3px 0 #052e16, 0 5px 8px rgba(0, 0, 0, 0.35);
 }
 .tile.mini { width: 31px; height: 44px; border-radius: 5px; box-shadow: none; }
-.tile.mini .tile-face { font-size: 16px; }
-.tile.mini .tile-label { font-size: 6px; }
-.tile.big { width: 76px; height: 106px; }
-.tile.big .tile-face { font-size: 38px; }
-.tile.big .tile-label { font-size: 12px; }
+.tile.big { width: 76px; height: 106px; padding: 4px; }
 
 /* Rack */
 .rack {
