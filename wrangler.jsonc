@@ -4,6 +4,11 @@
   "name": "mahjong",
   "main": "party/server.ts",
   "compatibility_date": "2025-04-01",
+  // Serve the built client (vite build -> dist) from the same origin;
+  // non-file requests fall through to the Worker (party routes).
+  "assets": {
+    "directory": "dist"
+  },
   "durable_objects": {
     "bindings": [
       {
