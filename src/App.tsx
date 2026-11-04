@@ -339,8 +339,22 @@ export default function App() {
                 {c.submitted[i] ? "passed ✓" : s.connected ? "choosing…" : "away"}
               </span>
             )}
-            {p && p.turn === i && view.phase === "playing" && (
+            {p && p.turn === i && view.phase === "playing" && !p.window && (
               <span className="turn-tag">to act</span>
+            )}
+            {p && p.window && i !== p.window.from && (
+              <span className="pass-state">
+                {(() => {
+                  const cl = p.window.claims.find((x) => x.seat === i);
+                  if (cl)
+                    return cl.kind === "mahjong"
+                      ? "called Mahjong!"
+                      : `called ${cl.kind}!`;
+                  if (p.window.passed.includes(i)) return "passed";
+                  if (p.window.escrowSeat !== null) return "tile hidden…";
+                  return s.connected || s.bot ? "thinking…" : "away";
+                })()}
+              </span>
             )}
           </div>
         ))}
