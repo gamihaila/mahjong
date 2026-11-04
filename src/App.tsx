@@ -177,6 +177,8 @@ export default function App() {
       if (msg.type === "seated") {
         localStorage.setItem(tokenKey, msg.token);
         setJoined(true);
+      } else if (msg.type === "error") {
+        setStatus(`Couldn't join: ${msg.error}`);
       } else if (msg.type === "view") {
         setView(msg as View);
       }
@@ -285,6 +287,9 @@ export default function App() {
           {status} · you are seat {you} ({WINDS[you] ?? "?"})
           {view ? ` · wall: ${view.wallCount}` : ""}
         </p>
+        <button className="quiet" onClick={() => send("reset")}>
+          Reset room
+        </button>
       </header>
 
       <section className="seats">
