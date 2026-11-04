@@ -22,5 +22,20 @@
       "tag": "v1",
       "new_sqlite_classes": ["Mahjong"]
     }
-  ]
+  ],
+  // Workers Previews (per-branch deployments from Workers Builds).
+  // Each Preview automatically gets an isolated Durable Object
+  // namespace and storage; the binding is mirrored here because the
+  // router resolves the namespace from env, and a binding that is not
+  // declared for Previews does not exist in a Preview.
+  "previews": {
+    "durable_objects": {
+      "bindings": [
+        {
+          "name": "Mahjong",
+          "class_name": "Mahjong"
+        }
+      ]
+    }
+  }
 }
