@@ -9,26 +9,33 @@ import { buildWall, shuffle, sortTiles, type Tile } from "../src/tiles";
 
 // The room actor, on PartyServer (the PartyKit successor: same Durable
 // Object actor model, deployed with wrangler to our own Cloudflare
-// account). Slices 1-2 of the design in DESIGN.md:
+// account). Slices 1-3 of the design in DESIGN.md:
 // - One room = one Durable Object = a single-threaded actor. Every
 //   command is serialized through onMessage, so the game has a total
 //   order of events by construction.
 // - Event-sourced: clients send commands, never state. A legal command
 //   appends an event to the log; state is the fold of that log (kept
 //   materialized, snapshotted into the object's storage).
-// - Redaction: the full state (wall, all racks, escrowed passes) never
-//   leaves this object. Each connection receives a per-seat view.
+// - Redaction: the full state (wall, racks, escrowed tiles and passes)
+//   never leaves this object. Each connection receives a per-seat view
+//   computed here: own tiles, everyone else's public information.
 // - Commands carry a client-generated id (deduplicated: at-least-once
 //   delivery, exactly-once effect) and the state version the client
 //   acted on (CAS: a mismatch is answered with "stale" + fresh view).
 // - Seats are reclaimed across reconnects with a seat token.
-// - The Charleston is an escrow barrier (design decision, 2026-11-04):
-//   all passes for a step are held hidden and unapplied until the last
-//   one arrives, then applied atomically. No timeouts; the only escape
-//   from a stalled Charleston is a unanimous vote to void the hand.
-//   Passes are amendable while they sit in escrow.
+// - The Charleston is an escrow barrier: passes are held hidden until
+//   all four arrive, then applied atomically. No timeouts; a unanimous
+//   void vote is the only escape. Passes are amendable in escrow.
+// - The play loop's claim window runs until the next draw (design
+//   decision 1): a claim for mahjong resolves immediately; other
+//   claims are intents that resolve when the window closes — when
+//   everyone else has responded, or when the grace period after an
+//   escrowed draw expires. If the next player draws while intents are
+//   still open, the drawn tile sits in escrow, unseen by anyone; a
+//   winning claim sends it back to the wall, otherwise it is revealed
+//   to the drawer when the window closes.
 
-type Phase = "lobby" | "charleston" | "ready";
+type Phase = "lobby" | "charleston" | "playing" | "over";
 
 interface Seat {
   name: string;
@@ -43,9 +50,9 @@ interface GameEvent {
   detail?: string;
 }
 
-/** One seat's escrowed pass: tiles chosen from their own rack, plus a
- *  count of "blind" tiles to forward sight-unseen from the incoming
- *  pass (only on the last pass of each Charleston). */
+/** One seat's escrowed Charleston pass: tiles chosen from their own
+ *  rack, plus a count of "blind" tiles to forward sight-unseen from
+ *  the incoming pass (last pass of each Charleston only). */
 interface PassSubmission {
   tiles: Tile[];
   blind: number;
@@ -59,12 +66,47 @@ interface CharlestonState {
   voidAgree: boolean[]; // per seat; the proposer counts as agreeing
 }
 
+type ClaimKind = "pung" | "kong" | "chow" | "mahjong";
+
+interface Claim {
+  seat: number;
+  kind: ClaimKind;
+  /** Tiles the claimant commits from their rack (partners for a chow,
+   *  the set-aside tiles for a pung or kong), fixed at claim time. */
+  tiles: Tile[];
+}
+
+interface Meld {
+  kind: "pung" | "kong" | "chow";
+  tiles: Tile[]; // exposed, public; includes the claimed discard
+}
+
+interface WindowState {
+  tile: Tile; // the live discard, public
+  from: number; // discarder
+  claims: Claim[]; // at most one per seat
+  passed: number[]; // seats that declined
+  escrow: { seat: number; tile: Tile; deadline: number } | null;
+}
+
+interface PlayState {
+  turn: number; // seat to act
+  hasDrawn: boolean; // the turn seat holds its extra tile and must discard
+  melds: Meld[][]; // per seat, public
+  discards: Tile[]; // dead discards, public, in order
+  window: WindowState | null;
+  winner: number | null;
+  winKind: "discard" | "self" | null;
+  drawGame: boolean;
+}
+
 interface GameState {
   phase: Phase;
   seats: Seat[];
   hands: Tile[][];
   wall: Tile[];
   charleston: CharlestonState | null;
+  play: PlayState | null;
   version: number;
   log: GameEvent[];
   processedIds: string[];
@@ -75,8 +117,12 @@ interface Command {
   baseVersion: number;
   type: string;
   tiles?: Tile[];
+  tile?: Tile;
   blind?: number;
   agree?: boolean;
+  kind?: ClaimKind;
+  owner?: number;
+  meld?: number;
 }
 
 interface Env {
@@ -88,15 +134,15 @@ type Conn = Connection<ConnState>;
 
 const MAX_SEATS = 4;
 const PROCESSED_CAP = 200;
+/** How long an escrowed draw stays hidden while claims can preempt
+ *  it. A placeholder value from the design, to tune in play. */
+const ESCROW_GRACE_MS = 2500;
 
 // Charleston geometry. Seats sit in turn order (0=East, 1=South,
 // 2=West, 3=North). A player facing the center has the previous seat
 // in turn order on their right (East's right hand points at North),
 // so with N seats: right = +(N-1), over = +N/2, left = +1 (mod N).
 // Steps: first Charleston right/over/left, second left/over/right.
-// "Over" with 2 seats degenerates to the other player; with 3 seats
-// there is no true "across", so it lands on the left neighbor — a
-// rehearsal-mode compromise until bots fill real tables to four.
 const STEP_DIRECTIONS = ["right", "over", "left", "left", "over", "right"] as const;
 const BLIND_STEPS = new Set([2, 5]); // last pass of each Charleston
 
@@ -117,6 +163,19 @@ function freshCharleston(n: number): CharlestonState {
   };
 }
 
+function freshPlay(n: number): PlayState {
+  return {
+    turn: 0, // East discards first, holding 14 from the deal
+    hasDrawn: true,
+    melds: Array.from({ length: n }, () => []),
+    discards: [],
+    window: null,
+    winner: null,
+    winKind: null,
+    drawGame: false,
+  };
+}
+
 function freshState(): GameState {
   return {
     phase: "lobby",
@@ -124,6 +183,7 @@ function freshState(): GameState {
     hands: [],
     wall: [],
     charleston: null,
+    play: null,
     version: 0,
     log: [],
     processedIds: [],
@@ -159,6 +219,31 @@ function subtract(a: Tile[], b: Tile[]): Tile[] {
   return out;
 }
 
+function countOf(tiles: Tile[], tile: Tile): number {
+  return tiles.filter((t) => t === tile).length;
+}
+
+/** Tiles a hand is worth toward 14: rack tiles plus melds, a kong's
+ *  four physical tiles counting as the three-tile group it is. */
+function handSize(state: GameState, seat: number): number {
+  const melds = state.play?.melds[seat] ?? [];
+  return (
+    (state.hands[seat]?.length ?? 0) +
+    melds.reduce((sum, m) => sum + (m.tiles.length === 4 ? 3 : m.tiles.length), 0)
+  );
+}
+
+const SUIT_OF = (t: Tile) => ("btc".includes(t[0]) && t.length === 2 ? t[0] : null);
+const RANK_OF = (t: Tile) => Number(t.slice(1));
+
+/** Do these three tiles form a sequence (a chow)? Jokers never do. */
+function isSequence(a: Tile, b: Tile, c: Tile): boolean {
+  const suit = SUIT_OF(a);
+  if (!suit || SUIT_OF(b) !== suit || SUIT_OF(c) !== suit) return false;
+  const ranks = [RANK_OF(a), RANK_OF(b), RANK_OF(c)].sort((x, y) => x - y);
+  return ranks[1] === ranks[0] + 1 && ranks[2] === ranks[1] + 1;
+}
+
 export class Mahjong extends Server<Env> {
   static options = { hibernate: true };
 
@@ -174,15 +259,18 @@ export class Mahjong extends Server<Env> {
   }
 
   /** The redacted projection for one seat. This is the ONLY game data
-   *  a client ever receives: own tiles (minus your own escrowed pass,
-   *  which is reported separately), everyone else's counts, and for
-   *  the Charleston only whether each seat has submitted — never what
-   *  anyone passed. */
+   *  a client ever receives: own tiles (minus your own escrowed
+   *  Charleston pass, reported separately), public table state
+   *  (melds, discards, the live discard, claim intents), and everyone
+   *  else's tile counts. Another seat's rack, the wall's order, an
+   *  escrowed draw, and escrowed passes are never in any view. */
   viewFor(seatIdx: number) {
     const s = this.state;
     const c = s.phase === "charleston" ? s.charleston : null;
+    const p = s.play;
     const myPass = c && seatIdx >= 0 ? c.passes[seatIdx] : null;
     const rack = seatIdx >= 0 ? s.hands[seatIdx] ?? [] : [];
+    const w = p?.window ?? null;
     return {
       type: "view",
       version: s.version,
@@ -200,7 +288,7 @@ export class Mahjong extends Server<Env> {
             step: c.step,
             direction: STEP_DIRECTIONS[c.step],
             stepStartedAt: c.stepStartedAt,
-            submitted: c.passes.map((p) => p !== null),
+            submitted: c.passes.map((pp) => pp !== null),
             yourPass: myPass ? myPass.tiles : [],
             yourBlind: myPass ? myPass.blind : 0,
             void:
@@ -210,6 +298,28 @@ export class Mahjong extends Server<Env> {
                     from: c.voidFrom,
                     agreed: s.seats.map((_, i) => c.voidAgree[i]),
                   },
+          }
+        : null,
+      play: p
+        ? {
+            turn: p.turn,
+            hasDrawn: p.hasDrawn,
+            melds: p.melds,
+            discards: p.discards,
+            window: w
+              ? {
+                  tile: w.tile,
+                  from: w.from,
+                  claims: w.claims.map((cl) => ({ seat: cl.seat, kind: cl.kind })),
+                  passed: w.passed,
+                  escrowSeat: w.escrow ? w.escrow.seat : null,
+                  escrowDeadline: w.escrow ? w.escrow.deadline : null,
+                  youEscrowed: seatIdx >= 0 && w.escrow?.seat === seatIdx,
+                }
+              : null,
+            winner: p.winner,
+            winKind: p.winKind,
+            drawGame: p.drawGame,
           }
         : null,
     };
@@ -275,19 +385,14 @@ export class Mahjong extends Server<Env> {
     this.state.log.push({ seq: this.state.log.length + 1, type, seat, detail });
   }
 
-  /** Apply one full round of escrowed passes, atomically.
-   *
+  /** Apply one full round of escrowed Charleston passes, atomically.
    *  Each seat's outgoing stack is its chosen tiles plus its blind
    *  tiles, and the blind tiles are the head of the stack it receives
-   *  in this same pass — a cyclic definition around the table. It is
-   *  resolved by fixed-point iteration: start from the chosen tiles
-   *  and keep prepending upstream tiles until every stack is stable.
-   *  That resolves every case anchored by at least one chosen tile
-   *  along the chain. The one residue — a closed cycle of blind
-   *  forwards with too few chosen tiles anywhere around it — is
-   *  topped up from the seat's own rack, which keeps tile counts and
-   *  conservation exact; no table (physical or digital) can audit
-   *  provenance inside such a pile-up anyway. */
+   *  in this same pass — a cyclic definition around the table,
+   *  resolved by fixed-point iteration. The one residue — a closed
+   *  cycle of blind forwards with too few chosen tiles anywhere
+   *  around it — is topped up from the seat's own rack, which keeps
+   *  tile counts and conservation exact. */
   applyBarrier() {
     const s = this.state;
     const c = s.charleston!;
@@ -312,8 +417,6 @@ export class Mahjong extends Server<Env> {
       }
       if (!changed) break;
     }
-    // Repair residue, and record how much of each outgoing stack came
-    // from the seat's own rack (the rest is its blind forward).
     const ownPart: Tile[][] = outgoing.map((stack, i) => {
       const own = [...chosen[i]];
       let j = 0;
@@ -328,7 +431,7 @@ export class Mahjong extends Server<Env> {
 
     for (let i = 0; i < n; i++) {
       const incoming = outgoing[senderOf(i)];
-      const forwarded = subtract(outgoing[i], ownPart[i]); // blind tiles, a subset of incoming
+      const forwarded = subtract(outgoing[i], ownPart[i]);
       const kept = subtract(incoming, forwarded);
       s.hands[i] = [...subtract(s.hands[i], ownPart[i]), ...kept];
     }
@@ -339,8 +442,9 @@ export class Mahjong extends Server<Env> {
       `step ${c.step + 1} ${STEP_DIRECTIONS[c.step]}`
     );
     if (c.step === 5) {
-      s.phase = "ready";
+      s.phase = "playing";
       s.charleston = null;
+      s.play = freshPlay(n);
       this.appendEvent("charleston-done");
     } else {
       c.step++;
@@ -348,6 +452,109 @@ export class Mahjong extends Server<Env> {
       c.passes = Array(n).fill(null);
       c.voidFrom = null;
       c.voidAgree = Array(n).fill(false);
+    }
+  }
+
+  /** Every seat except the discarder has claimed or passed. */
+  allResponded(): boolean {
+    const s = this.state;
+    const w = s.play?.window;
+    if (!w) return false;
+    const n = s.seats.length;
+    for (let i = 0; i < n; i++) {
+      if (i === w.from) continue;
+      const claimed = w.claims.some((cl) => cl.seat === i);
+      if (!claimed && !w.passed.includes(i)) return false;
+    }
+    return true;
+  }
+
+  endHand(winner: number | null, winKind: PlayState["winKind"], drawGame: boolean) {
+    const s = this.state;
+    const p = s.play!;
+    p.winner = winner;
+    p.winKind = winKind;
+    p.drawGame = drawGame;
+    p.window = null;
+    s.phase = "over";
+    this.appendEvent(
+      drawGame ? "wall-game" : "mahjong",
+      winner ?? undefined,
+      winKind ?? undefined
+    );
+  }
+
+  /** Close the claim window and apply its outcome. Called when
+   *  everyone has responded, or when the escrow grace expires. */
+  async resolveWindow() {
+    const s = this.state;
+    const p = s.play;
+    const w = p?.window;
+    if (!p || !w || s.phase !== "playing") return;
+    const n = s.seats.length;
+    const next = (w.from + 1) % n;
+
+    // Winning claim: mahjong never reaches here (it resolves on
+    // arrival). Priority: pung and kong over chow; ties go to the
+    // seat closest to the discarder in turn order.
+    const rank = (k: ClaimKind) => (k === "chow" ? 1 : 0);
+    const dist = (seat: number) => (seat - w.from + n) % n;
+    const winner = [...w.claims].sort(
+      (a, b) => rank(a.kind) - rank(b.kind) || dist(a.seat) - dist(b.seat)
+    )[0];
+
+    if (w.escrow) {
+      // The escrowed draw returns to the wall unseen if a claim won;
+      // otherwise it is revealed to the drawer as their draw.
+      if (winner) {
+        s.wall.unshift(w.escrow.tile);
+      } else {
+        s.hands[w.escrow.seat].push(w.escrow.tile);
+        p.turn = w.escrow.seat;
+        p.hasDrawn = true;
+      }
+    }
+
+    if (winner) {
+      const seat = winner.seat;
+      s.hands[seat] = subtract(s.hands[seat], winner.tiles);
+      p.melds[seat].push({
+        kind: winner.kind as Meld["kind"],
+        tiles: [w.tile, ...winner.tiles],
+      });
+      this.appendEvent("claim", seat, `${winner.kind} on ${w.tile}`);
+      p.turn = seat;
+      p.hasDrawn = true;
+      if (winner.kind === "kong") {
+        // A kong draws a replacement from the back of the wall.
+        const replacement = s.wall.pop();
+        if (replacement === undefined) {
+          this.endHand(null, null, true);
+        } else {
+          s.hands[seat].push(replacement);
+        }
+      }
+    } else if (!w.escrow) {
+      // Nobody claimed and nobody drew: the discard dies and the
+      // turn passes to the next seat, which still has to draw.
+      p.discards.push(w.tile);
+      p.turn = next;
+      p.hasDrawn = false;
+    } else {
+      // Escrow revealed above; the unclaimed discard dies.
+      p.discards.push(w.tile);
+    }
+    p.window = null;
+    s.version++;
+    await this.persist();
+    this.broadcastViews();
+  }
+
+  /** The escrow grace expired: claims, if any, preempt the draw. */
+  async onAlarm() {
+    const w = this.state.play?.window;
+    if (w?.escrow && Date.now() >= w.escrow.deadline) {
+      await this.resolveWindow();
     }
   }
 
@@ -384,6 +591,7 @@ export class Mahjong extends Server<Env> {
       s.hands[0].push(...s.wall.splice(0, 1)); // East starts with 14
       s.phase = "charleston";
       s.charleston = freshCharleston(s.seats.length);
+      s.play = null;
       this.appendEvent("start", seatIdx, `${s.seats.length} players`);
       applied = true;
     } else if (cmd.type === "pass" && s.phase === "charleston" && s.charleston) {
@@ -397,9 +605,6 @@ export class Mahjong extends Server<Env> {
         (blind === 0 || BLIND_STEPS.has(c.step)) &&
         containsAll(s.hands[seatIdx], tiles);
       if (legal) {
-        // Escrow: stored hidden, replaces any earlier submission for
-        // this step (passes are amendable until the barrier trips),
-        // and nothing moves until every seat has submitted.
         c.passes[seatIdx] = { tiles: [...tiles], blind };
         this.appendEvent(
           "pass",
@@ -429,7 +634,6 @@ export class Mahjong extends Server<Env> {
     ) {
       const c = s.charleston;
       if (cmd.agree === false) {
-        // A single refusal cancels the proposal.
         c.voidFrom = null;
         c.voidAgree = s.seats.map(() => false);
         this.appendEvent("void-declined", seatIdx);
@@ -437,7 +641,6 @@ export class Mahjong extends Server<Env> {
         c.voidAgree[seatIdx] = true;
         this.appendEvent("void-agree", seatIdx);
         if (c.voidAgree.every(Boolean)) {
-          // Unanimous: the hand is void. Back to the lobby.
           s.phase = "lobby";
           s.hands = [];
           s.wall = [];
@@ -446,13 +649,237 @@ export class Mahjong extends Server<Env> {
         }
       }
       applied = true;
+    } else if (cmd.type === "discard" && s.phase === "playing" && s.play) {
+      const p = s.play;
+      const tile = cmd.tile;
+      if (
+        seatIdx === p.turn &&
+        p.hasDrawn &&
+        p.window === null &&
+        tile !== undefined &&
+        s.hands[seatIdx].includes(tile)
+      ) {
+        s.hands[seatIdx] = subtract(s.hands[seatIdx], [tile]);
+        p.window = {
+          tile,
+          from: seatIdx,
+          claims: [],
+          passed: [],
+          escrow: null,
+        };
+        p.hasDrawn = false;
+        this.appendEvent("discard", seatIdx, tile);
+        applied = true;
+      }
+    } else if (cmd.type === "draw" && s.phase === "playing" && s.play) {
+      const p = s.play;
+      const n = s.seats.length;
+      if (p.window === null && seatIdx === p.turn && !p.hasDrawn) {
+        // A plain draw on your turn.
+        const tile = s.wall.shift();
+        if (tile === undefined) {
+          this.endHand(null, null, true);
+        } else {
+          s.hands[seatIdx].push(tile);
+          p.hasDrawn = true;
+          this.appendEvent("draw", seatIdx);
+        }
+        applied = true;
+      } else if (
+        p.window !== null &&
+        seatIdx === (p.window.from + 1) % n &&
+        p.window.escrow === null
+      ) {
+        // Drawing while the claim window is open. If everyone else
+        // has passed and nobody claimed, the draw is safe and lands
+        // at once; otherwise the tile goes into escrow, hidden from
+        // everyone including the drawer, until the window closes.
+        const w = p.window!; // branch guard: window is open
+        const othersDone = s.seats.every(
+          (_, i) =>
+            i === w.from ||
+            i === seatIdx ||
+            w.passed.includes(i) ||
+            w.claims.some((cl) => cl.seat === i)
+        );
+        const tile = s.wall.shift();
+        if (tile === undefined) {
+          this.endHand(null, null, true);
+          applied = true;
+        } else if (othersDone && w.claims.length === 0) {
+          p.discards.push(w.tile);
+          p.window = null;
+          s.hands[seatIdx].push(tile);
+          p.turn = seatIdx;
+          p.hasDrawn = true;
+          this.appendEvent("draw", seatIdx, "uncontested");
+          applied = true;
+        } else {
+          w.escrow = {
+            seat: seatIdx,
+            tile,
+            deadline: Date.now() + ESCROW_GRACE_MS,
+          };
+          await this.ctx.storage.setAlarm(w.escrow.deadline);
+          this.appendEvent("draw", seatIdx, "escrow");
+          applied = true;
+        }
+      }
+    } else if (cmd.type === "claim" && s.phase === "playing" && s.play?.window) {
+      const p = s.play;
+      const w = p.window!; // branch guard: window is open
+      const kind = cmd.kind;
+      const n = s.seats.length;
+      if (
+        seatIdx >= 0 &&
+        seatIdx !== w.from &&
+        kind !== undefined &&
+        w.tile !== "J" // a discarded joker is dead: it can never be called
+      ) {
+        if (kind === "mahjong") {
+          // A mahjong claim resolves the moment it arrives, ahead of
+          // everything else in the window. The shape check is
+          // structural in this slice; verification against the card
+          // arrives with the card parser.
+          if (handSize(s, seatIdx) + 1 === 14) {
+            s.hands[seatIdx].push(w.tile);
+            if (w.escrow) s.wall.unshift(w.escrow.tile);
+            this.appendEvent("claim", seatIdx, `mahjong on ${w.tile}`);
+            this.endHand(seatIdx, "discard", false);
+            applied = true;
+          }
+        } else {
+          // Compose the tiles the claimant commits from their rack.
+          const rack = s.hands[seatIdx];
+          let tiles: Tile[] | null = null;
+          if (kind === "pung" || kind === "kong") {
+            const need = kind === "pung" ? 2 : 3;
+            const naturals = Math.min(countOf(rack, w.tile), need);
+            // When the called tile is itself a joker the two counts
+            // are the same pool; never count it twice. (Unreachable
+            // while joker discards are uncallable, but keep the
+            // arithmetic honest.)
+            const jokers =
+              w.tile === "J"
+                ? 0
+                : Math.min(countOf(rack, "J"), need - naturals);
+            if (naturals + jokers === need) {
+              tiles = [
+                ...Array(naturals).fill(w.tile),
+                ...Array(jokers).fill("J"),
+              ];
+            }
+          } else if (kind === "chow") {
+            // Only the next seat may take a chow, and only with the
+            // two natural partners it names.
+            const partners = cmd.tiles ?? [];
+            if (
+              seatIdx === (w.from + 1) % n &&
+              partners.length === 2 &&
+              containsAll(rack, partners) &&
+              isSequence(w.tile, partners[0], partners[1])
+            ) {
+              tiles = [...partners];
+            }
+          }
+          if (tiles !== null) {
+            w.claims = [
+              ...w.claims.filter((cl) => cl.seat !== seatIdx),
+              { seat: seatIdx, kind, tiles },
+            ];
+            w.passed = w.passed.filter((x) => x !== seatIdx);
+            this.appendEvent("claim-intent", seatIdx, kind);
+            applied = true;
+            if (this.allResponded()) {
+              await this.resolveWindow();
+              // resolveWindow persists and broadcasts itself, and it
+              // has already bumped the version; the shared path below
+              // would double-count, so answer here and return.
+              s.processedIds.push(cmd.id);
+              if (s.processedIds.length > PROCESSED_CAP) {
+                s.processedIds = s.processedIds.slice(-PROCESSED_CAP);
+              }
+              await this.persist();
+              conn.send(
+                JSON.stringify({ type: "ack", id: cmd.id, version: s.version })
+              );
+              return;
+            }
+          }
+        }
+      }
+    } else if (cmd.type === "pass" && s.phase === "playing" && s.play?.window) {
+      // Declining the live discard. (In the Charleston phase the same
+      // command word submits a pass of tiles; the phase decides.)
+      const w = s.play.window;
+      if (seatIdx >= 0 && seatIdx !== w.from) {
+        w.claims = w.claims.filter((cl) => cl.seat !== seatIdx);
+        if (!w.passed.includes(seatIdx)) w.passed.push(seatIdx);
+        this.appendEvent("no-claim", seatIdx);
+        applied = true;
+        if (this.allResponded()) {
+          await this.resolveWindow();
+          s.processedIds.push(cmd.id);
+          if (s.processedIds.length > PROCESSED_CAP) {
+            s.processedIds = s.processedIds.slice(-PROCESSED_CAP);
+          }
+          await this.persist();
+          conn.send(
+            JSON.stringify({ type: "ack", id: cmd.id, version: s.version })
+          );
+          return;
+        }
+      }
+    } else if (cmd.type === "exchange" && s.phase === "playing" && s.play) {
+      // Joker exchange: on your turn, trade the natural tile from
+      // your rack for a joker exposed in any meld (yours or another
+      // seat's). Only pung and kong melds can hold jokers.
+      const p = s.play;
+      const owner = cmd.owner;
+      const meldIdx = cmd.meld;
+      const tile = cmd.tile;
+      if (
+        seatIdx === p.turn &&
+        p.hasDrawn &&
+        p.window === null &&
+        owner !== undefined &&
+        meldIdx !== undefined &&
+        tile !== undefined &&
+        p.melds[owner]?.[meldIdx]?.tiles.includes("J") &&
+        s.hands[seatIdx].includes(tile) &&
+        p.melds[owner][meldIdx].tiles.find((t) => t !== "J") === tile
+      ) {
+        const meld = p.melds[owner][meldIdx];
+        meld.tiles = [tile, ...subtract(meld.tiles, ["J"])];
+        s.hands[seatIdx] = [...subtract(s.hands[seatIdx], [tile]), "J"];
+        this.appendEvent("exchange", seatIdx, `${tile} for joker`);
+        applied = true;
+      }
+    } else if (
+      cmd.type === "declareMahjong" &&
+      s.phase === "playing" &&
+      s.play
+    ) {
+      const p = s.play;
+      if (
+        seatIdx === p.turn &&
+        p.hasDrawn &&
+        p.window === null &&
+        handSize(s, seatIdx) === 14
+      ) {
+        this.appendEvent("declare", seatIdx, "self-drawn mahjong");
+        this.endHand(seatIdx, "self", false);
+        applied = true;
+      }
     } else if (cmd.type === "reset" && s.phase !== "charleston") {
-      // Reset is a lobby convenience. Mid-Charleston it is refused on
-      // purpose: the unanimous void vote is the only way out.
+      // Reset is a lobby convenience and the friendly way to abandon
+      // a hand mid-play. Mid-Charleston it is refused on purpose:
+      // there the unanimous void vote is the only way out.
       s.phase = "lobby";
       s.hands = [];
       s.wall = [];
       s.charleston = null;
+      s.play = null;
       this.appendEvent("reset", seatIdx);
       applied = true;
     }
