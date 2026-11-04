@@ -2,13 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import PartySocket from "partysocket";
 import { tileFace, tileLabel, type Tile } from "./tiles";
 
-// Client for slices 1-2: connect to a room, take (or reclaim) a seat,
-// and render the redacted view the server sends — your rack large, the
-// other seats as counts only. The Charleston is played from the rack:
-// tap tiles to compose your pass, submit, and watch the barrier —
-// who has submitted, who is still choosing, who has been gone how
-// long. The client holds no game secrets: if it isn't in the view,
-// it isn't here.
+// Client for slices 1-3: connect to a room, take (or reclaim) a seat,
+// and render the redacted view the server sends — your rack large,
+// the other seats as counts plus their public melds. The Charleston
+// is played from the rack; the play loop shows the discard pool, the
+// live discard with its claim window, and your escrowed draw as a
+// face-down tile until the window closes. The client holds no game
+// secrets: if it isn't in the view, it isn't here.
 
 interface SeatView {
   name: string;
@@ -26,318 +26,611 @@ interface CharlestonView {
   void: { from: number; agreed: boolean[] } | null;
 }
 
+interface MeldView {
+  kind: "pung" | "kong" | "chow";
+  tiles: Tile[];
+}
+
+interface WindowView {
+  tile: Tile;
+  from: number;
+  claims: { seat: number; kind: string }[];
+  passed: number[];
+  escrowSeat: number | null;
+  escrowDeadline: number | null;
+  youEscrowed: boolean;
+}
+
+interface PlayView {
+  turn: number;
+  hasDrawn: boolean;
+  melds: MeldView[][];
+  discards: Tile[];
+  window: WindowView | null;
+  winner: number | null;
+  winKind: "discard" | "self" | null;
+  drawGame: boolean;
+}
+
 interface View {
   type: "view";
   version: number;
-  phase: "lobby" | "charleston" | "ready";
+  phase: "lobby" | "charleston" | "playing" | "over";
   you: number;
   yourTiles: Tile[];
   seats: SeatView[];
   wallCount: number;
   charleston: CharlestonView | null;
+  play: PlayView | null;
 }
 
-const params = new URLSearchParams(window.location.search);
-const ROOM = params.get("room") ?? "family";
-const NAME = params.get("name") ?? "Player";
-const TOKEN_KEY = `mahjong-token-${ROOM}`;
-const BLIND_STEPS = new Set([2, 5]);
-const DIR_ARROWS: Record<string, string> = {
-  right: "→ right",
-  over: "⇅ across",
-  left: "→ left",
-};
+const WINDS = ["East", "South", "West", "North"];
 
-function TileView({
-  tile,
-  selected,
-  onClick,
-}: {
-  tile: Tile;
-  selected?: boolean;
-  onClick?: () => void;
-}) {
-  return (
-    <div
-      className={selected ? "tile selected" : "tile"}
-      title={tileLabel(tile)}
-      onClick={onClick}
-      role={onClick ? "button" : undefined}
-    >
-      <span className="tile-face">{tileFace(tile)}</span>
-      <span className="tile-label">{tileLabel(tile)}</span>
-    </div>
-  );
+function useNow(active: boolean, ms = 500) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [active, ms]);
+  return now;
 }
 
-function elapsed(ms: number): string {
+function ago(ms: number): string {
   const sec = Math.max(0, Math.floor(ms / 1000));
-  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  if (sec < 5) return "just now";
+  if (sec < 60) return `${sec}s`;
+  return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+}
+
+function countIn(tiles: Tile[], t: Tile) {
+  return tiles.filter((x) => x === t).length;
+}
+
+const SUIT_OF = (t: Tile) =>
+  "btc".includes(t[0]) && t.length === 2 ? t[0] : null;
+
+/** Pairs of rack tiles that complete a sequence with the given tile. */
+function chowOptions(rack: Tile[], tile: Tile): Tile[][] {
+  const suit = SUIT_OF(tile);
+  if (!suit) return [];
+  const rank = Number(tile.slice(1));
+  const have = (r: number) => rack.includes(`${suit}${r}` as Tile);
+  const out: Tile[][] = [];
+  for (const [a, b] of [
+    [rank - 2, rank - 1],
+    [rank - 1, rank + 1],
+    [rank + 1, rank + 2],
+  ]) {
+    if (a >= 1 && b <= 9 && have(a) && have(b)) {
+      out.push([`${suit}${a}` as Tile, `${suit}${b}` as Tile]);
+    }
+  }
+  return out;
 }
 
 export default function App() {
+  const [room, setRoom] = useState(
+    () => new URLSearchParams(location.search).get("room") ?? "family"
+  );
+  const [name, setName] = useState(() => localStorage.getItem("mj-name") ?? "");
+  const [joined, setJoined] = useState(false);
   const [view, setView] = useState<View | null>(null);
-  const [status, setStatus] = useState("connecting…");
-  const [selected, setSelected] = useState<Tile[]>([]);
+  const [status, setStatus] = useState("Not connected");
+  const [idCounter] = useState(() => ({ n: 0 }));
+
+  // Charleston pass composition: indices into the combined rack
+  // (hand tiles followed by the escrowed pass), plus a blind count
+  // on the last pass of each Charleston.
+  const [selected, setSelected] = useState<number[]>([]);
   const [blind, setBlind] = useState(0);
-  const [now, setNow] = useState(Date.now());
+  const [touched, setTouched] = useState(false);
+  // Play loop: the rack index selected to discard.
+  const [discardIdx, setDiscardIdx] = useState<number | null>(null);
+
   const socketRef = useRef<PartySocket | null>(null);
   const viewRef = useRef<View | null>(null);
   viewRef.current = view;
 
+  const c = view?.charleston ?? null;
+  const p = view?.play ?? null;
+  const you = view?.you ?? -1;
+  const step = c?.step ?? -1;
+  const isBlindStep = step === 2 || step === 5;
+
+  // New Charleston step: reset the composition. Within a step, keep
+  // the escrowed pass pre-selected until the player touches the rack.
   useEffect(() => {
-    const host =
-      window.location.hostname === "localhost"
-        ? "localhost:8787"
-        : window.location.host;
+    setSelected([]);
+    setBlind(0);
+    setTouched(false);
+  }, [step, view?.phase]);
+  useEffect(() => {
+    if (c && !touched && c.yourPass.length > 0 && view) {
+      const base = view.yourTiles.length;
+      setSelected(c.yourPass.map((_, i) => base + i));
+      setBlind(c.yourBlind);
+    }
+  }, [c?.yourPass, touched]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setDiscardIdx(null), [view?.version]);
+
+  const waiting =
+    (view?.phase === "charleston" && !!c && !c.submitted[you]) ||
+    p?.window?.escrowDeadline != null;
+  const now = useNow(waiting, 500);
+
+  function connect() {
+    localStorage.setItem("mj-name", name);
+    const tokenKey = `mj-token-${room}`;
+    const token = localStorage.getItem(tokenKey) ?? "";
     const socket = new PartySocket({
-      host,
+      host: location.host,
       party: "mahjong",
-      room: ROOM,
-      query: {
-        name: NAME,
-        token: localStorage.getItem(TOKEN_KEY) ?? "",
-      },
+      room,
+      query: { name: name || "Player", token },
     });
     socketRef.current = socket;
-
-    socket.addEventListener("open", () => setStatus("connected"));
-    socket.addEventListener("close", () => setStatus("disconnected"));
+    socket.addEventListener("open", () => setStatus("Connected"));
+    socket.addEventListener("close", () => setStatus("Disconnected"));
     socket.addEventListener("message", (e) => {
       const msg = JSON.parse(e.data as string);
       if (msg.type === "seated") {
-        localStorage.setItem(TOKEN_KEY, msg.token);
+        localStorage.setItem(tokenKey, msg.token);
+        setJoined(true);
       } else if (msg.type === "view") {
         setView(msg as View);
-      } else if (msg.type === "error") {
-        setStatus(`error: ${msg.error}`);
       }
     });
-    return () => socket.close();
-  }, []);
+  }
 
-  // A ticking clock for the waiting display.
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  // Each Charleston step starts with a clean slate, prefilled with
-  // whatever you already have in escrow (after a reconnect, say).
-  const step = view?.charleston?.step;
-  useEffect(() => {
-    if (view?.charleston) {
-      setSelected(view.charleston.yourPass);
-      setBlind(view.charleston.yourBlind);
-    } else {
-      setSelected([]);
-      setBlind(0);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, view?.phase]);
-
-  const send = (type: string, extra: Record<string, unknown> = {}) => {
-    socketRef.current?.send(
+  function send(type: string, extra: Record<string, unknown> = {}) {
+    const v = viewRef.current;
+    if (!v || !socketRef.current) return;
+    idCounter.n += 1;
+    socketRef.current.send(
       JSON.stringify({
-        id: crypto.randomUUID(),
-        baseVersion: viewRef.current?.version ?? 0,
+        id: `${Date.now()}-${idCounter.n}`,
+        baseVersion: v.version,
         type,
         ...extra,
       })
     );
-  };
+  }
 
-  if (!view) return <main className="app"><p>{status}</p></main>;
+  if (!joined) {
+    return (
+      <div className="app">
+        <h1>Mahjong</h1>
+        <div className="join">
+          <label>
+            Room
+            <input value={room} onChange={(e) => setRoom(e.target.value)} />
+          </label>
+          <label>
+            Your name
+            <input value={name} onChange={(e) => setName(e.target.value)} />
+          </label>
+          <button onClick={connect} disabled={!name.trim()}>
+            Join room
+          </button>
+        </div>
+        <p className="status">{status}</p>
+      </div>
+    );
+  }
 
-  const c = view.charleston;
-  const others = view.seats
-    .map((seat, i) => ({ ...seat, idx: i }))
-    .filter((seat) => seat.idx !== view.you);
+  const yourPass = c?.yourPass ?? [];
+  const submitted = !!c?.submitted[you];
+  // Combined rack for the Charleston UI: tiles in hand followed by
+  // the tiles sitting in your escrowed pass.
+  const rackTiles = view ? [...view.yourTiles, ...yourPass] : [];
+  const selectedTiles = selected
+    .map((i) => rackTiles[i])
+    .filter((t): t is Tile => t !== undefined);
 
-  // During the Charleston your escrowed tiles leave the rack view but
-  // stay yours: show them in the same rack, still tappable, so a pass
-  // can be amended until the barrier trips.
-  const rackTiles = c ? [...view.yourTiles, ...c.yourPass] : view.yourTiles;
-  const selectedCount = (t: Tile) => selected.filter((x) => x === t).length;
-  const toggle = (tile: Tile, instanceIdx: number) => {
-    // instanceIdx counts identical tiles so far: if this instance is
-    // among the selected ones, deselect; otherwise select it.
-    if (instanceIdx < selectedCount(tile)) {
-      const next = [...selected];
-      next.splice(next.indexOf(tile), 1);
-      setSelected(next);
-    } else if (selected.length + blind < 3) {
-      setSelected([...selected, tile]);
-    }
-  };
-  const canSubmit = c !== null && selected.length + blind === 3;
-  const alreadyIn = c?.submitted[view.you] ?? false;
+  function toggleTile(i: number) {
+    if (view?.phase !== "charleston") return;
+    setTouched(true);
+    setSelected((sel) => {
+      if (sel.includes(i)) return sel.filter((x) => x !== i);
+      if (sel.length >= 3 - (isBlindStep ? blind : 0)) return sel;
+      return [...sel, i];
+    });
+  }
 
-  const phaseLabel =
-    view.phase === "lobby"
-      ? "Lobby"
-      : view.phase === "charleston"
-        ? "Charleston"
-        : "Ready to play";
+  function submitPass() {
+    if (selectedTiles.length + (isBlindStep ? blind : 0) !== 3) return;
+    send("pass", { tiles: selectedTiles, blind: isBlindStep ? blind : 0 });
+  }
+
+  // ---- play-loop state ----
+  const w = p?.window ?? null;
+  const myTurn = !!p && p.turn === you && view?.phase === "playing";
+  const mustDiscard = myTurn && !!p?.hasDrawn && !w;
+  const myRack = view?.yourTiles ?? [];
+  const windowTile = w?.tile;
+  const myCopies = windowTile ? countIn(myRack, windowTile) : 0;
+  const myJokers = countIn(myRack, "J");
+  const canPung = !!w && myCopies + myJokers >= 2;
+  const canKong = !!w && myCopies + myJokers >= 3;
+  const chows = w ? chowOptions(myRack, w.tile) : [];
+  const iAmNext = !!w && !!view && you === (w.from + 1) % view.seats.length;
+  const myClaim = w?.claims.find((cl) => cl.seat === you);
+  const iPassed = !!w && w.passed.includes(you);
+
+  // Joker exchanges available to me right now: melds holding a joker
+  // whose natural tile I hold.
+  const exchanges: { owner: number; meld: number; tile: Tile }[] = [];
+  if (p && mustDiscard) {
+    p.melds.forEach((melds, owner) =>
+      melds.forEach((meld, mi) => {
+        const natural = meld.tiles.find((t) => t !== "J");
+        if (meld.tiles.includes("J") && natural && myRack.includes(natural)) {
+          exchanges.push({ owner, meld: mi, tile: natural });
+        }
+      })
+    );
+  }
+
+  const escrowSecs =
+    w?.escrowDeadline != null
+      ? Math.max(0, Math.ceil((w.escrowDeadline - now) / 1000))
+      : null;
 
   return (
-    <main className="app">
-      <header className="topbar">
-        <strong>Room “{ROOM}”</strong>
-        <span>{phaseLabel}</span>
-        <span>Wall: {view.wallCount}</span>
-        <span className="status">{status}</span>
+    <div className="app">
+      <header>
+        <h1>Mahjong — room “{room}”</h1>
+        <p className="status">
+          {status} · you are seat {you} ({WINDS[you] ?? "?"})
+          {view ? ` · wall: ${view.wallCount}` : ""}
+        </p>
       </header>
 
-      <section className="others">
-        {others.map((seat) => (
-          <div key={seat.idx} className="seat-row">
-            <span className={seat.connected ? "dot on" : "dot"} />
-            <span className="seat-name">{seat.name}</span>
-            <span className="backs" aria-label={`${seat.tileCount} tiles`}>
-              {"🀄".repeat(Math.min(seat.tileCount, 14))}
-            </span>
-            <span className="count">{seat.tileCount}</span>
+      <section className="seats">
+        {view?.seats.map((s, i) => (
+          <div key={i} className={i === you ? "seat you" : "seat"}>
+            <div className="seat-head">
+              <strong>
+                {WINDS[i]} · {s.name}
+                {i === you ? " (you)" : ""}
+              </strong>
+              <span className={s.connected ? "dot on" : "dot off"} />
+            </div>
+            {i === you ? null : (
+              <div className="backs" aria-label={`${s.tileCount} tiles`}>
+                {Array.from({ length: s.tileCount }, (_, j) => (
+                  <span key={j} className="back" />
+                ))}
+              </div>
+            )}
+            <span className="count">{s.tileCount} tiles</span>
+            {p && p.melds[i]?.length > 0 && (
+              <div className="melds">
+                {p.melds[i].map((m, mi) => (
+                  <span key={mi} className="meld" title={m.kind}>
+                    {m.tiles.map((t, ti) => (
+                      <span key={ti} className="tile mini">
+                        {tileFace(t)}
+                      </span>
+                    ))}
+                  </span>
+                ))}
+              </div>
+            )}
+            {c && (
+              <span className="pass-state">
+                {c.submitted[i] ? "passed ✓" : s.connected ? "choosing…" : "away"}
+              </span>
+            )}
+            {p && p.turn === i && view.phase === "playing" && (
+              <span className="turn-tag">to act</span>
+            )}
           </div>
         ))}
       </section>
 
-      {c && (
-        <section className="charleston">
-          <div className="char-head">
-            <strong>
-              Pass {c.step + 1} of 6 — {DIR_ARROWS[c.direction] ?? c.direction}
-            </strong>
-            <span className="waiting-time">
-              waiting {elapsed(now - c.stepStartedAt)}
-            </span>
-          </div>
-          <ul className="pass-status">
-            {view.seats.map((seat, i) => (
-              <li key={i}>
-                <span className={seat.connected ? "dot on" : "dot"} />
-                {i === view.you ? "You" : seat.name}:{" "}
-                {c.submitted[i]
-                  ? "passed ✓"
-                  : seat.connected
-                    ? "choosing…"
-                    : "disconnected"}
-              </li>
-            ))}
-          </ul>
+      {view?.phase === "lobby" && (
+        <section className="panel">
+          <p>
+            {view.seats.length} player{view.seats.length === 1 ? "" : "s"} in
+            the room. Anyone can deal when you're ready.
+          </p>
+          <button onClick={() => send("start")}>Deal the tiles</button>
+        </section>
+      )}
 
-          {BLIND_STEPS.has(c.step) && (
-            <div className="blind-row">
-              <span>
-                Blind pass (forward tiles sight-unseen from the pass
-                coming to you):
-              </span>
-              <button
-                onClick={() => setBlind(Math.max(0, blind - 1))}
-                disabled={blind === 0}
-              >
-                −
-              </button>
-              <strong>{blind}</strong>
-              <button
-                onClick={() =>
-                  setBlind(Math.min(3 - selected.length, blind + 1))
-                }
-                disabled={blind >= 3 - selected.length}
-              >
-                +
-              </button>
+      {view?.phase === "charleston" && c && (
+        <section className="panel">
+          <h2>
+            Charleston — pass {c.step + 1} of 6: {c.direction}
+            {isBlindStep ? " (blind pass allowed)" : ""}
+          </h2>
+          <p className="waiting">
+            Step started {ago(now - c.stepStartedAt)} ago ·{" "}
+            {c.submitted.filter(Boolean).length} of {view.seats.length} passes
+            in
+          </p>
+          {c.void ? (
+            <div className="void-banner">
+              <p>
+                {view.seats[c.void.from]?.name} proposes voiding this hand.
+                Agreed:{" "}
+                {c.void.agreed
+                  .map((a, i) => (a ? view.seats[i]?.name : null))
+                  .filter(Boolean)
+                  .join(", ") || "—"}
+              </p>
+              {c.void.from !== you && !c.void.agreed[you] && (
+                <>
+                  <button onClick={() => send("voidVote", { agree: true })}>
+                    Agree to void
+                  </button>
+                  <button onClick={() => send("voidVote", { agree: false })}>
+                    Decline
+                  </button>
+                </>
+              )}
+              {c.void.from === you && (
+                <button onClick={() => send("voidVote", { agree: false })}>
+                  Withdraw proposal
+                </button>
+              )}
+            </div>
+          ) : (
+            <button className="quiet" onClick={() => send("voidPropose")}>
+              Propose voiding the hand (needs everyone)
+            </button>
+          )}
+          <p className="hint">
+            {submitted
+              ? "Your pass is in escrow — change the selection and resubmit to amend it."
+              : "Tap tiles to choose your pass, then submit."}
+          </p>
+        </section>
+      )}
+
+      {view?.phase === "playing" && p && (
+        <section className="panel">
+          <h2>
+            {w
+              ? `${view.seats[w.from]?.name} discarded ${tileLabel(w.tile)}`
+              : myTurn
+                ? p.hasDrawn
+                  ? "Your turn — discard"
+                  : "Your turn — draw"
+                : `${view.seats[p.turn]?.name} to act`}
+          </h2>
+
+          {w && (
+            <div className="window-box">
+              <span className="tile big">{tileFace(w.tile)}</span>
+              <div className="window-info">
+                {w.escrowSeat !== null ? (
+                  <p>
+                    {view.seats[w.escrowSeat]?.name} drew a tile — hidden
+                    {escrowSecs !== null ? ` for ${escrowSecs}s` : ""} while
+                    claims can preempt it.
+                    {w.youEscrowed ? " It's yours if nobody claims." : ""}
+                  </p>
+                ) : (
+                  <p>The claim window is open until the next draw.</p>
+                )}
+                <p className="claims-line">
+                  {w.claims.length === 0 && w.passed.length === 0
+                    ? "No responses yet."
+                    : [
+                        ...w.claims.map(
+                          (cl) => `${view.seats[cl.seat]?.name}: ${cl.kind}`
+                        ),
+                        ...w.passed.map(
+                          (s2) => `${view.seats[s2]?.name}: pass`
+                        ),
+                      ].join(" · ")}
+                </p>
+                {you !== w.from ? (
+                  <div className="claim-actions">
+                    {myClaim ? (
+                      <span>
+                        You claimed {myClaim.kind} — waiting for the window
+                        to close.
+                      </span>
+                    ) : iPassed ? (
+                      <span>You passed on this tile.</span>
+                    ) : (
+                      <>
+                        <button onClick={() => send("pass")}>Pass</button>
+                        {windowTile === "J" && (
+                          <span>A discarded joker is dead — it can't be called.</span>
+                        )}
+                        {windowTile !== "J" && canPung && (
+                          <button
+                            onClick={() => send("claim", { kind: "pung" })}
+                          >
+                            Pung
+                          </button>
+                        )}
+                        {windowTile !== "J" && canKong && (
+                          <button
+                            onClick={() => send("claim", { kind: "kong" })}
+                          >
+                            Kong
+                          </button>
+                        )}
+                        {windowTile !== "J" &&
+                          iAmNext &&
+                          chows.map((pair, ci) => (
+                            <button
+                              key={ci}
+                              onClick={() =>
+                                send("claim", { kind: "chow", tiles: pair })
+                              }
+                            >
+                              Chow {pair.map(tileLabel).join(" ")}
+                            </button>
+                          ))}
+                        {windowTile !== "J" && (
+                          <button
+                            onClick={() => send("claim", { kind: "mahjong" })}
+                          >
+                            Mahjong
+                          </button>
+                        )}
+                      </>
+                    )}
+                    {iAmNext && (
+                      <button onClick={() => send("draw")}>Draw</button>
+                    )}
+                  </div>
+                ) : (
+                  <p>Waiting for claims…</p>
+                )}
+              </div>
             </div>
           )}
 
-          <div className="char-actions">
-            <button
-              className="primary"
-              disabled={!canSubmit}
-              onClick={() => send("pass", { tiles: selected, blind })}
-            >
-              {alreadyIn
-                ? `Amend pass (${selected.length + blind}/3)`
-                : `Pass ${selected.length + blind}/3 tiles`}
-            </button>
-            {c.void === null ? (
-              <button className="quiet" onClick={() => send("voidPropose")}>
-                Propose voiding the hand
+          {!w && myTurn && !p.hasDrawn && (
+            <button onClick={() => send("draw")}>Draw a tile</button>
+          )}
+          {mustDiscard && (
+            <div className="discard-actions">
+              <button
+                disabled={discardIdx === null}
+                onClick={() =>
+                  discardIdx !== null &&
+                  send("discard", { tile: myRack[discardIdx] })
+                }
+              >
+                Discard
+                {discardIdx !== null ? ` ${tileLabel(myRack[discardIdx])}` : ""}
               </button>
-            ) : (
-              <span className="void-box">
-                {view.seats[c.void.from].name} proposes voiding the hand —{" "}
-                {c.void.agreed.filter(Boolean).length}/{view.seats.length}{" "}
-                agreed
-                {c.void.from !== view.you && !c.void.agreed[view.you] && (
-                  <>
-                    {" "}
-                    <button onClick={() => send("voidVote", { agree: true })}>
-                      Agree
-                    </button>{" "}
-                    <button onClick={() => send("voidVote", { agree: false })}>
-                      Decline
-                    </button>
-                  </>
-                )}
-                {c.void.from === view.you && (
-                  <>
-                    {" "}
-                    <button onClick={() => send("voidVote", { agree: false })}>
-                      Withdraw
-                    </button>
-                  </>
-                )}
-              </span>
+              <button onClick={() => send("declareMahjong")}>
+                Declare mahjong
+              </button>
+              {exchanges.map((ex, ei) => (
+                <button
+                  key={ei}
+                  onClick={() =>
+                    send("exchange", {
+                      owner: ex.owner,
+                      meld: ex.meld,
+                      tile: ex.tile,
+                    })
+                  }
+                >
+                  Exchange {tileLabel(ex.tile)} for{" "}
+                  {view.seats[ex.owner]?.name}'s joker
+                </button>
+              ))}
+            </div>
+          )}
+
+          {p.discards.length > 0 && (
+            <div className="discard-pool">
+              <span className="pool-label">Discards:</span>
+              {p.discards.map((t, i) => (
+                <span key={i} className="tile mini">
+                  {tileFace(t)}
+                </span>
+              ))}
+            </div>
+          )}
+          <button className="quiet" onClick={() => send("reset")}>
+            Abandon hand (back to lobby)
+          </button>
+        </section>
+      )}
+
+      {view?.phase === "over" && p && (
+        <section className="panel">
+          <h2>
+            {p.drawGame
+              ? "Wall game — nobody won this hand."
+              : `${view.seats[p.winner ?? -1]?.name} has mahjong${
+                  p.winKind === "self" ? " (self-drawn)" : ""
+                }!`}
+          </h2>
+          <button onClick={() => send("reset")}>Back to the lobby</button>
+        </section>
+      )}
+
+      {view && view.phase !== "lobby" && (
+        <section className="rack">
+          <h2>Your tiles</h2>
+          <div className="tiles">
+            {(view.phase === "charleston" ? rackTiles : view.yourTiles).map(
+              (t, i) => {
+                const inPass =
+                  view.phase === "charleston" && i >= view.yourTiles.length;
+                return (
+                  <button
+                    key={`${t}-${i}`}
+                    className={
+                      "tile" +
+                      (inPass ? " passed" : "") +
+                      (selected.includes(i) || discardIdx === i
+                        ? " selected"
+                        : "")
+                    }
+                    disabled={
+                      view.phase === "charleston"
+                        ? false
+                        : !mustDiscard
+                    }
+                    onClick={() => {
+                      if (view.phase === "charleston") toggleTile(i);
+                      else if (mustDiscard)
+                        setDiscardIdx(discardIdx === i ? null : i);
+                    }}
+                  >
+                    {tileFace(t)}
+                  </button>
+                );
+              }
             )}
+            {w?.youEscrowed && <span className="tile facedown">?</span>}
+            {view.phase === "charleston" &&
+              Array.from({ length: blind }, (_, i) => (
+                <span key={`blind-${i}`} className="tile facedown">
+                  ?
+                </span>
+              ))}
           </div>
-          <p className="hint">
-            Tap tiles in your rack to compose the pass. Nothing moves
-            until everyone has passed — and you can amend until then.
-          </p>
+          {view.phase === "charleston" && c && (
+            <div className="passbar">
+              {isBlindStep && (
+                <label>
+                  Blind (forward unseen):{" "}
+                  <input
+                    type="number"
+                    min={0}
+                    max={3 - selectedTiles.length}
+                    value={blind}
+                    onChange={(e) =>
+                      setBlind(
+                        Math.max(
+                          0,
+                          Math.min(
+                            3 - selectedTiles.length,
+                            Number(e.target.value) || 0
+                          )
+                        )
+                      )
+                    }
+                  />
+                </label>
+              )}
+              <button
+                disabled={selectedTiles.length + blind !== 3}
+                onClick={submitPass}
+              >
+                {submitted ? "Amend pass" : "Submit pass"} (
+                {selectedTiles.length + blind}/3)
+              </button>
+            </div>
+          )}
         </section>
       )}
-
-      {view.phase === "ready" && (
-        <section className="charleston">
-          <strong>Charleston complete.</strong>{" "}
-          <span>
-            Everyone holds the hand they will play. The play loop itself
-            arrives in the next slice.
-          </span>
-        </section>
-      )}
-
-      <section className="rack">
-        {rackTiles.map((tile, i) => {
-          const instanceIdx = rackTiles
-            .slice(0, i)
-            .filter((t) => t === tile).length;
-          const isSel = c !== null && instanceIdx < selectedCount(tile);
-          return (
-            <TileView
-              key={`${tile}-${i}`}
-              tile={tile}
-              selected={isSel}
-              onClick={c ? () => toggle(tile, instanceIdx) : undefined}
-            />
-          );
-        })}
-        {view.phase === "lobby" && (
-          <p className="hint">
-            You are seat {view.you + 1} of {view.seats.length}. Waiting in
-            the lobby — start when everyone is in.
-          </p>
-        )}
-      </section>
-
-      <footer className="actions">
-        {view.phase === "lobby" ? (
-          <button onClick={() => send("start")}>Deal the tiles</button>
-        ) : view.phase === "ready" ? (
-          <button onClick={() => send("reset")}>Back to lobby</button>
-        ) : null}
-      </footer>
-    </main>
+    </div>
   );
 }
