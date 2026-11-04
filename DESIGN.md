@@ -110,3 +110,13 @@ He is new to the game rules.
 - Open threads for later: escrow grace length (tune in prototype, ~2–3 s);
   card text format (needs designing when George has the card in hand);
   bot difficulty level definitions.
+
+## Platform note (2026-11-04)
+
+PartyKit's hosted platform shut down on 2026-10-23 and `partykit deploy`
+is retired. This project therefore builds on **PartyServer** — the same
+Durable Object actor model, deployed with wrangler to our own Cloudflare
+account. Every design decision above is unchanged; only the packaging
+differs (wrangler.jsonc instead of partykit.json, the `partyserver`
+package, storage via the object's own ctx.storage). Read "PartyKit" in
+the text above as "PartyServer" from here on.

@@ -1,0 +1,21 @@
+{
+  // PartyServer deployment: a plain Cloudflare Worker + Durable Object
+  // in our own account, deployed with `wrangler deploy`.
+  "name": "mahjong",
+  "main": "party/server.ts",
+  "compatibility_date": "2025-04-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "Mahjong",
+        "class_name": "Mahjong"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Mahjong"]
+    }
+  ]
+}
