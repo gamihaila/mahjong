@@ -51,6 +51,12 @@ interface PlayView {
   winner: number | null;
   winKind: "discard" | "self" | null;
   drawGame: boolean;
+  winInfo: {
+    section: string;
+    points: number;
+    display: string;
+    concealed: boolean;
+  } | null;
 }
 
 interface View {
@@ -178,6 +184,8 @@ export default function App() {
       if (msg.type === "seated") {
         localStorage.setItem(tokenKey, msg.token);
         setJoined(true);
+      } else if (msg.type === "note") {
+        setStatus(msg.note);
       } else if (msg.type === "error") {
         setStatus(`Couldn't join: ${msg.error}`);
       } else if (msg.type === "view") {
@@ -556,6 +564,13 @@ export default function App() {
                   p.winKind === "self" ? " (self-drawn)" : ""
                 }!`}
           </h2>
+          {p.winInfo && (
+            <p>
+              {p.winInfo.section} · {p.winInfo.display} ·{" "}
+              {p.winInfo.points} points
+              {p.winInfo.concealed ? " · concealed" : ""}
+            </p>
+          )}
           <button onClick={() => send("reset")}>Back to the lobby</button>
         </section>
       )}

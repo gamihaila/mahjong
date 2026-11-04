@@ -6,6 +6,7 @@ import {
   type ConnectionContext,
 } from "partyserver";
 import { buildWall, shuffle, sortTiles, type Tile } from "../src/tiles";
+import { CARD_2026, findWin, type WinInfo } from "../src/card";
 
 // The room actor, on PartyServer (the PartyKit successor: same Durable
 // Object actor model, deployed with wrangler to our own Cloudflare
@@ -26,6 +27,9 @@ import { buildWall, shuffle, sortTiles, type Tile } from "../src/tiles";
 // - The Charleston is an escrow barrier: passes are held hidden until
 //   all four arrive, then applied atomically. No timeouts; a unanimous
 //   void vote is the only escape. Passes are amendable in escrow.
+// - Mahjong, claimed or declared, is verified against the encoded
+//   card (src/card.ts): a declaration that doesn't complete a card
+//   hand is refused, with a note to the player saying so.
 // - The play loop's claim window runs until the next draw (design
 //   decision 1): a claim for mahjong resolves immediately; other
 //   claims are intents that resolve when the window closes — when
@@ -98,6 +102,7 @@ interface PlayState {
   winner: number | null;
   winKind: "discard" | "self" | null;
   drawGame: boolean;
+  winInfo: WinInfo | null;
 }
 
 interface GameState {
@@ -173,6 +178,7 @@ function freshPlay(n: number): PlayState {
     winner: null,
     winKind: null,
     drawGame: false,
+    winInfo: null,
   };
 }
 
@@ -241,16 +247,6 @@ function subtract(a: Tile[], b: Tile[]): Tile[] {
 
 function countOf(tiles: Tile[], tile: Tile): number {
   return tiles.filter((t) => t === tile).length;
-}
-
-/** Tiles a hand is worth toward 14: rack tiles plus melds, a kong's
- *  four physical tiles counting as the three-tile group it is. */
-function handSize(state: GameState, seat: number): number {
-  const melds = state.play?.melds[seat] ?? [];
-  return (
-    (state.hands[seat]?.length ?? 0) +
-    melds.reduce((sum, m) => sum + (m.tiles.length === 4 ? 3 : m.tiles.length), 0)
-  );
 }
 
 const SUIT_OF = (t: Tile) => ("btc".includes(t[0]) && t.length === 2 ? t[0] : null);
@@ -344,6 +340,7 @@ export class Mahjong extends Server<Env> {
             winner: p.winner,
             winKind: p.winKind,
             drawGame: p.drawGame,
+            winInfo: p.winInfo,
           }
         : null,
     };
@@ -500,12 +497,18 @@ export class Mahjong extends Server<Env> {
     return true;
   }
 
-  endHand(winner: number | null, winKind: PlayState["winKind"], drawGame: boolean) {
+  endHand(
+    winner: number | null,
+    winKind: PlayState["winKind"],
+    drawGame: boolean,
+    winInfo: WinInfo | null = null
+  ) {
     const s = this.state;
     const p = s.play!;
     p.winner = winner;
     p.winKind = winKind;
     p.drawGame = drawGame;
+    p.winInfo = winInfo;
     p.window = null;
     s.phase = "over";
     this.appendEvent(
@@ -769,15 +772,26 @@ export class Mahjong extends Server<Env> {
       ) {
         if (kind === "mahjong") {
           // A mahjong claim resolves the moment it arrives, ahead of
-          // everything else in the window. The shape check is
-          // structural in this slice; verification against the card
-          // arrives with the card parser.
-          if (handSize(s, seatIdx) + 1 === 14) {
+          // everything else in the window — but only if the claimed
+          // tile really completes a hand on the card.
+          const win = findWin(
+            CARD_2026,
+            [...s.hands[seatIdx], w.tile],
+            s.play.melds[seatIdx]
+          );
+          if (win) {
             s.hands[seatIdx].push(w.tile);
             if (w.escrow) s.wall.unshift(w.escrow.tile);
             this.appendEvent("claim", seatIdx, `mahjong on ${w.tile}`);
-            this.endHand(seatIdx, "discard", false);
+            this.endHand(seatIdx, "discard", false, win);
             applied = true;
+          } else {
+            conn.send(
+              JSON.stringify({
+                type: "note",
+                note: "That tile doesn't complete a hand on the card.",
+              })
+            );
           }
         } else {
           // Compose the tiles the claimant commits from their rack.
@@ -892,15 +906,20 @@ export class Mahjong extends Server<Env> {
       s.play
     ) {
       const p = s.play;
-      if (
-        seatIdx === p.turn &&
-        p.hasDrawn &&
-        p.window === null &&
-        handSize(s, seatIdx) === 14
-      ) {
-        this.appendEvent("declare", seatIdx, "self-drawn mahjong");
-        this.endHand(seatIdx, "self", false);
-        applied = true;
+      if (seatIdx === p.turn && p.hasDrawn && p.window === null) {
+        const win = findWin(CARD_2026, s.hands[seatIdx], p.melds[seatIdx]);
+        if (win) {
+          this.appendEvent("declare", seatIdx, "self-drawn mahjong");
+          this.endHand(seatIdx, "self", false, win);
+          applied = true;
+        } else {
+          conn.send(
+            JSON.stringify({
+              type: "note",
+              note: "That isn't a hand on the card yet.",
+            })
+          );
+        }
       }
     } else if (cmd.type === "reset" && s.phase !== "charleston") {
       // Reset is a lobby convenience and the friendly way to abandon
