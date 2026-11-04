@@ -1,0 +1,93 @@
+/* Tile-first layout: the rack is the interface. Minimal chrome,
+   minimal whitespace — the opposite of the app that inspired this. */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #14532d;
+  color: #f8fafc;
+}
+
+.app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 12px 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 100vh;
+}
+
+.topbar {
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  font-size: 14px;
+  opacity: 0.95;
+}
+.topbar .status { margin-left: auto; opacity: 0.7; }
+
+.others { display: flex; flex-direction: column; gap: 6px; }
+.seat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 15px;
+}
+.dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: #64748b; flex: none;
+}
+.dot.on { background: #4ade80; }
+.seat-name { font-weight: 600; min-width: 90px; }
+.backs { letter-spacing: 1px; overflow: hidden; white-space: nowrap; }
+.count { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+.rack {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 12px;
+  padding: 12px;
+  min-height: 132px;
+}
+.hint { font-size: 15px; opacity: 0.85; margin: 0; align-self: center; }
+
+.tile {
+  width: 62px;
+  height: 88px;
+  background: linear-gradient(180deg, #fffdf5, #f1ead2);
+  border-radius: 8px;
+  border: 1px solid #d6cba3;
+  box-shadow: 0 3px 0 #b8ab7e, 0 5px 8px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: #1c1917;
+  user-select: none;
+}
+.tile-face { font-size: 30px; line-height: 1; }
+.tile-label { font-size: 10px; font-weight: 600; letter-spacing: 0.02em; }
+
+.actions { display: flex; justify-content: center; }
+.actions button {
+  font-size: 16px;
+  font-weight: 600;
+  padding: 10px 22px;
+  border-radius: 999px;
+  border: none;
+  background: #facc15;
+  color: #422006;
+  cursor: pointer;
+}
+.actions button:hover { background: #fde047; }
