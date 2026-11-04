@@ -7,6 +7,13 @@ import {
 } from "partyserver";
 import { buildWall, shuffle, sortTiles, type Tile } from "../src/tiles";
 import { CARD_2026, findWin, type WinInfo } from "../src/card";
+import {
+  decideCharlestonPass,
+  decideTurn,
+  decideWindow,
+  type BotCommand,
+  type BotView,
+} from "./bot";
 
 // The room actor, on PartyServer (the PartyKit successor: same Durable
 // Object actor model, deployed with wrangler to our own Cloudflare
@@ -30,6 +37,15 @@ import { CARD_2026, findWin, type WinInfo } from "../src/card";
 // - Mahjong, claimed or declared, is verified against the encoded
 //   card (src/card.ts): a declaration that doesn't complete a card
 //   hand is refused, with a note to the player saying so.
+// - Bots (party/bot.ts) fill empty seats. A bot seat is driven by
+//   the actor itself: it reads the same redacted viewFor() a human
+//   at that seat would get, decides from the card evaluator, and
+//   its commands go through the very same dispatch — no privileged
+//   path, no sight of other racks. Bot turns are scheduled on the
+//   object's alarm (shared with the escrow deadline), at human
+//   pace: a bot never answers a window faster than the escrow
+//   grace a human gets, and it can preempt an escrowed draw only
+//   inside that same grace.
 // - The play loop's claim window runs until the next draw (design
 //   decision 1): a claim for mahjong resolves immediately; other
 //   claims are intents that resolve when the window closes — when
@@ -45,6 +61,7 @@ interface Seat {
   name: string;
   token: string;
   connected: boolean;
+  bot: boolean;
 }
 
 interface GameEvent {
@@ -128,6 +145,7 @@ interface Command {
   kind?: ClaimKind;
   owner?: number;
   meld?: number;
+  seat?: number;
 }
 
 interface Env {
@@ -272,6 +290,7 @@ export class Mahjong extends Server<Env> {
     } else if (saved) {
       await this.ctx.storage.delete("state");
     }
+    this.driveBots();
   }
 
   async persist() {
@@ -300,6 +319,7 @@ export class Mahjong extends Server<Env> {
       seats: s.seats.map((seat, i) => ({
         name: seat.name,
         connected: seat.connected,
+        bot: seat.bot,
         tileCount: s.hands[i]?.length ?? 0,
       })),
       wallCount: s.wall.length,
@@ -379,6 +399,7 @@ export class Mahjong extends Server<Env> {
         name,
         token: token || crypto.randomUUID(),
         connected: true,
+        bot: false,
       });
       this.appendEvent("join", seatIdx, name);
       s.version++;
@@ -584,39 +605,97 @@ export class Mahjong extends Server<Env> {
     this.broadcastViews();
   }
 
-  /** The escrow grace expired: claims, if any, preempt the draw. */
+  /** The alarm is shared: the escrow grace expiring (claims, if
+   *  any, preempt the draw) and bot actions falling due. */
   async onAlarm() {
     const w = this.state.play?.window;
     if (w?.escrow && Date.now() >= w.escrow.deadline) {
       await this.resolveWindow();
     }
+    await this.runDueBots();
+    this.driveBots();
   }
 
   async onMessage(conn: Conn, message: string | ArrayBuffer) {
-    const seatIdx = this.seatOf(conn);
     let cmd: Command;
     try {
       cmd = JSON.parse(message as string) as Command;
     } catch {
       return;
     }
+    await this.dispatchCommand(this.seatOf(conn), cmd, (obj) =>
+      conn.send(JSON.stringify(obj))
+    );
+    this.driveBots();
+  }
+
+  /** One command through the full pipeline — idempotency, version
+   *  CAS, the dispatch itself, persistence and broadcast. Human
+   *  messages arrive via onMessage; bot commands are issued by the
+   *  actor itself with a fresh id and the current version. `send`
+   *  delivers this command's own replies (ack / rejected / stale /
+   *  notes); for bots it is a no-op sink, since a bot reads the
+   *  world from its view like everyone else. Returns whether the
+   *  command applied. */
+  async dispatchCommand(
+    seatIdx: number,
+    cmd: Command,
+    send: (obj: object) => void
+  ): Promise<boolean> {
     const s = this.state;
 
     // Idempotency: a retried command is acknowledged, not re-applied.
     if (s.processedIds.includes(cmd.id)) {
-      conn.send(JSON.stringify({ type: "ack", id: cmd.id, version: s.version }));
-      conn.send(JSON.stringify(this.viewFor(seatIdx)));
-      return;
+      send({ type: "ack", id: cmd.id, version: s.version });
+      send(this.viewFor(seatIdx));
+      return true;
     }
     // Optimistic concurrency: the client acted on a stale version.
     if (cmd.baseVersion !== s.version) {
-      conn.send(JSON.stringify({ type: "stale", id: cmd.id }));
-      conn.send(JSON.stringify(this.viewFor(seatIdx)));
-      return;
+      send({ type: "stale", id: cmd.id });
+      send(this.viewFor(seatIdx));
+      return false;
     }
 
     let applied = false;
-    if (cmd.type === "start" && s.phase === "lobby" && s.seats.length > 0) {
+    if (
+      cmd.type === "addBot" &&
+      s.phase === "lobby" &&
+      seatIdx >= 0 &&
+      !s.seats[seatIdx].bot &&
+      s.seats.length < MAX_SEATS
+    ) {
+      // A bot seat: driven by the actor itself, never by a
+      // connection. Its token is a random UUID that is never sent
+      // anywhere, so the seat can never be claimed from outside.
+      const names = ["Ada", "Bea", "Cyd", "Dee"];
+      const name =
+        names.find((nm) => !s.seats.some((seat) => seat.name === nm)) ??
+        `Bot ${s.seats.length + 1}`;
+      s.seats.push({
+        name,
+        token: `bot-${crypto.randomUUID()}`,
+        connected: true,
+        bot: true,
+      });
+      this.appendEvent("add-bot", s.seats.length - 1, name);
+      applied = true;
+    } else if (
+      cmd.type === "removeBot" &&
+      s.phase === "lobby" &&
+      cmd.seat !== undefined &&
+      s.seats[cmd.seat]?.bot
+    ) {
+      const [gone] = s.seats.splice(cmd.seat, 1);
+      // Human connections seated behind the removed bot shift
+      // down one index with the array.
+      for (const conn of this.getConnections<ConnState>()) {
+        const cs = conn.state as ConnState | null;
+        if (cs && cs.seat > cmd.seat) conn.setState({ seat: cs.seat - 1 });
+      }
+      this.appendEvent("remove-bot", cmd.seat, gone.name);
+      applied = true;
+    } else if (cmd.type === "start" && s.phase === "lobby" && s.seats.length > 0) {
       // Trusted shuffle, then a simple sequential deal (the ceremonial
       // 4-4-4-1 wall break is cosmetic; a later slice can add it).
       // The deal opens the Charleston.
@@ -754,7 +833,6 @@ export class Mahjong extends Server<Env> {
             tile,
             deadline: Date.now() + ESCROW_GRACE_MS,
           };
-          await this.ctx.storage.setAlarm(w.escrow.deadline);
           this.appendEvent("draw", seatIdx, "escrow");
           applied = true;
         }
@@ -786,12 +864,10 @@ export class Mahjong extends Server<Env> {
             this.endHand(seatIdx, "discard", false, win);
             applied = true;
           } else {
-            conn.send(
-              JSON.stringify({
-                type: "note",
-                note: "That tile doesn't complete a hand on the card.",
-              })
-            );
+            send({
+              type: "note",
+              note: "That tile doesn't complete a hand on the card.",
+            });
           }
         } else {
           // Compose the tiles the claimant commits from their rack.
@@ -845,10 +921,8 @@ export class Mahjong extends Server<Env> {
                 s.processedIds = s.processedIds.slice(-PROCESSED_CAP);
               }
               await this.persist();
-              conn.send(
-                JSON.stringify({ type: "ack", id: cmd.id, version: s.version })
-              );
-              return;
+              send({ type: "ack", id: cmd.id, version: s.version });
+              return true;
             }
           }
         }
@@ -869,10 +943,8 @@ export class Mahjong extends Server<Env> {
             s.processedIds = s.processedIds.slice(-PROCESSED_CAP);
           }
           await this.persist();
-          conn.send(
-            JSON.stringify({ type: "ack", id: cmd.id, version: s.version })
-          );
-          return;
+          send({ type: "ack", id: cmd.id, version: s.version });
+          return true;
         }
       }
     } else if (cmd.type === "exchange" && s.phase === "playing" && s.play) {
@@ -913,12 +985,10 @@ export class Mahjong extends Server<Env> {
           this.endHand(seatIdx, "self", false, win);
           applied = true;
         } else {
-          conn.send(
-            JSON.stringify({
-              type: "note",
-              note: "That isn't a hand on the card yet.",
-            })
-          );
+          send({
+            type: "note",
+            note: "That isn't a hand on the card yet.",
+          });
         }
       }
     } else if (cmd.type === "reset" && s.phase !== "charleston") {
@@ -941,12 +1011,155 @@ export class Mahjong extends Server<Env> {
         s.processedIds = s.processedIds.slice(-PROCESSED_CAP);
       }
       await this.persist();
-      conn.send(JSON.stringify({ type: "ack", id: cmd.id, version: s.version }));
+      send({ type: "ack", id: cmd.id, version: s.version });
       this.broadcastViews();
     } else {
-      conn.send(
-        JSON.stringify({ type: "rejected", id: cmd.id, version: s.version })
+      send({ type: "rejected", id: cmd.id, version: s.version });
+    }
+    return applied;
+  }
+
+  // ---------- bot driving ----------
+
+  botQueue = new Map<number, { key: string; at: number }>();
+  botAttempts = new Map<string, { version: number; count: number }>();
+  botSeq = 0;
+
+  /** What a bot seat currently owes the game, if anything: a
+   *  Charleston pass, a window response, a draw, a turn action, or
+   *  a void agreement — the last only once every human has agreed,
+   *  so a bot never blocks a void the humans want and never starts
+   *  one. Bots never draw into an open window; they claim or pass,
+   *  which keeps the escrow path a purely human affordance. */
+  botObligation(seat: number): string | null {
+    const s = this.state;
+    if (!s.seats[seat]?.bot) return null;
+    if (s.phase === "charleston" && s.charleston) {
+      const c = s.charleston;
+      if (c.voidFrom !== null && !c.voidAgree[seat]) {
+        const humansAgreed = s.seats.every(
+          (st, i) => st.bot || c.voidAgree[i]
+        );
+        if (humansAgreed) return "void";
+      }
+      return c.passes[seat] === null ? "charleston" : null;
+    }
+    if (s.phase === "playing" && s.play) {
+      const p = s.play;
+      if (p.window) {
+        const w = p.window;
+        const responded =
+          w.passed.includes(seat) ||
+          w.claims.some((cl) => cl.seat === seat);
+        return seat !== w.from && !responded ? "window" : null;
+      }
+      if (p.turn === seat) return p.hasDrawn ? "act" : "draw";
+    }
+    return null;
+  }
+
+  /** (Re)compute every bot seat's pending action and arm the alarm
+   *  for the earliest thing due — a bot action or the escrow
+   *  deadline. Called after every state change; cheap and
+   *  idempotent. Delays are human-paced, and a window response
+   *  always lands inside the escrow grace. */
+  driveBots() {
+    const s = this.state;
+    for (let seat = 0; seat < s.seats.length; seat++) {
+      const key = s.seats[seat].bot ? this.botObligation(seat) : null;
+      if (!key) {
+        this.botQueue.delete(seat);
+        continue;
+      }
+      const blocked = this.botAttempts.get(`${seat}:${key}`);
+      if (blocked && blocked.version === s.version && blocked.count >= 3) {
+        this.botQueue.delete(seat);
+        continue;
+      }
+      const existing = this.botQueue.get(seat);
+      if (!existing || existing.key !== key) {
+        const delay =
+          key === "charleston"
+            ? 900 + Math.random() * 1100
+            : key === "window"
+              ? 600 + Math.random() * 800
+              : key === "draw"
+                ? 500 + Math.random() * 600
+                : key === "void"
+                  ? 500 + Math.random() * 400
+                  : 800 + Math.random() * 800;
+        this.botQueue.set(seat, { key, at: Date.now() + delay });
+      }
+    }
+    void this.armAlarm();
+  }
+
+  async armAlarm() {
+    const times: number[] = [];
+    const w = this.state.play?.window;
+    if (w?.escrow) times.push(w.escrow.deadline);
+    for (const e of this.botQueue.values()) times.push(e.at);
+    try {
+      if (times.length > 0) {
+        await this.ctx.storage.setAlarm(Math.min(...times));
+      } else {
+        await this.ctx.storage.deleteAlarm();
+      }
+    } catch {
+      // The alarm is a wake-up mechanism, not state; the next
+      // message or alarm re-drives everything anyway.
+    }
+  }
+
+  /** Execute the bot actions that have fallen due. Each decision
+   *  is made fresh, from the seat's current redacted view, and is
+   *  issued through the same dispatch as a human command. */
+  async runDueBots() {
+    const now = Date.now();
+    for (const [seat, entry] of [...this.botQueue.entries()]) {
+      if (entry.at > now) continue;
+      this.botQueue.delete(seat);
+      if (this.botObligation(seat) !== entry.key) continue;
+      const view = this.viewFor(seat) as unknown as BotView;
+      let cmd: BotCommand | null = null;
+      if (entry.key === "charleston") cmd = decideCharlestonPass(view);
+      else if (entry.key === "window") cmd = decideWindow(view);
+      else if (entry.key === "void") cmd = { type: "voidVote", agree: true };
+      else cmd = decideTurn(view);
+      const sig = `${seat}:${entry.key}`;
+      if (!cmd) {
+        this.noteBotFailure(sig);
+        continue;
+      }
+      const applied = await this.dispatchCommand(
+        seat,
+        {
+          id: `bot-${++this.botSeq}`,
+          baseVersion: this.state.version,
+          ...cmd,
+        },
+        () => {}
       );
+      if (!applied) {
+        console.log(
+          `bot command refused: seat ${seat}, ${entry.key}, ${cmd.type}`
+        );
+        this.noteBotFailure(sig);
+      } else {
+        this.botAttempts.delete(sig);
+      }
+    }
+  }
+
+  /** A bot whose decision the server refuses three times at the
+   *  same state version stops retrying until the state moves: a
+   *  brain/server disagreement should stall loudly, not spin. */
+  noteBotFailure(sig: string) {
+    const cur = this.botAttempts.get(sig);
+    if (cur && cur.version === this.state.version) {
+      cur.count++;
+    } else {
+      this.botAttempts.set(sig, { version: this.state.version, count: 1 });
     }
   }
 }

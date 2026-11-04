@@ -382,3 +382,108 @@ export function findWin(
       }
     : null;
 }
+
+// ---------- evaluation (for the bots) ----------
+
+export interface HandEval {
+  hand: CardHand;
+  /** Tiles still missing to complete the hand from this position,
+   *  counting jokers in the rack as filling eligible groups. */
+  missing: number;
+  /** The rack tiles that serve the hand under its best reading,
+   *  with multiplicity. Jokers always count as kept. */
+  keep: Tile[];
+}
+
+/** Score a position against one hand: how far it is from done, and
+ *  which rack tiles are pulling weight. Mirrors the matcher's
+ *  readings exactly (same candidates, same meld rule, same joker
+ *  rule), but where the matcher asks "filled or not", this counts
+ *  the shortfall group by group. Returns null when the hand is
+ *  unreachable from here (a meld fits no group, or the hand is
+ *  concealed and melds exist). */
+export function evaluateHand(
+  hand: CardHand,
+  rackTiles: Tile[],
+  melds: MeldLike[]
+): HandEval | null {
+  if (hand.concealed && melds.length > 0) return null;
+  const slotCount = slotMap(hand).size;
+  const assignments = permutations(SUITS, slotCount);
+  let best: HandEval | null = null;
+
+  for (const candidate of rankCandidates(hand)) {
+    for (const assign of assignments) {
+      const groups = concretize(candidate, assign);
+      // Assign melds to the groups they fit, scoring each full
+      // assignment; melds are few, so plain recursion suffices.
+      const used = new Array(groups.length).fill(false);
+      const score = (mi: number) => {
+        if (mi === melds.length) {
+          const rack = countsOf(rackTiles);
+          let jokers = rack.get("J") ?? 0;
+          const keep: Tile[] = [];
+          const deficits: { n: number; eligible: boolean }[] = [];
+          groups.forEach((group, gi) => {
+            if (used[gi]) return;
+            const need = countsOf(group);
+            let deficit = 0;
+            for (const [tile, n] of need) {
+              const have = Math.min(n, rack.get(tile) ?? 0);
+              for (let i = 0; i < have; i++) keep.push(tile);
+              rack.set(tile, (rack.get(tile) ?? 0) - have);
+              deficit += n - have;
+            }
+            const identical = group.every((t) => t === group[0]);
+            deficits.push({ n: deficit, eligible: identical && group.length >= 3 });
+          });
+          let missing = 0;
+          for (const d of deficits) {
+            let n = d.n;
+            if (n > 0 && d.eligible) {
+              const fill = Math.min(n, jokers);
+              n -= fill;
+              jokers -= fill;
+            }
+            missing += n;
+          }
+          for (let i = 0; i < (countsOf(rackTiles).get("J") ?? 0); i++) {
+            keep.push("J");
+          }
+          if (!best || missing < best.missing) best = { hand, missing, keep };
+          return;
+        }
+        for (let gi = 0; gi < groups.length; gi++) {
+          if (used[gi] || !meldFits(melds[mi], groups[gi])) continue;
+          used[gi] = true;
+          score(mi + 1);
+          used[gi] = false;
+        }
+      };
+      score(0);
+    }
+  }
+  return best;
+}
+
+/** The k closest hands to this position, nearest first. Ties break
+ *  toward the hand that keeps more of the rack, then more points. */
+export function bestHands(
+  card: CardHand[],
+  rackTiles: Tile[],
+  melds: MeldLike[],
+  k = 3
+): HandEval[] {
+  const evals: HandEval[] = [];
+  for (const hand of card) {
+    const e = evaluateHand(hand, rackTiles, melds);
+    if (e) evals.push(e);
+  }
+  evals.sort(
+    (a, b) =>
+      a.missing - b.missing ||
+      b.keep.length - a.keep.length ||
+      b.hand.points - a.hand.points
+  );
+  return evals.slice(0, k);
+}

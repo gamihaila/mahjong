@@ -14,6 +14,7 @@ import { TileSvg, TileBackSvg } from "./TileSvg";
 interface SeatView {
   name: string;
   connected: boolean;
+  bot: boolean;
   tileCount: number;
 }
 
@@ -306,7 +307,8 @@ export default function App() {
           <div key={i} className={i === you ? "seat you" : "seat"}>
             <div className="seat-head">
               <strong>
-                {WINDS[i]} · {s.name}
+                {WINDS[i]} · {s.bot ? "🤖 " : ""}
+                {s.name}
                 {i === you ? " (you)" : ""}
               </strong>
               <span className={s.connected ? "dot on" : "dot off"} />
@@ -350,7 +352,29 @@ export default function App() {
             {view.seats.length} player{view.seats.length === 1 ? "" : "s"} in
             the room. Anyone can deal when you're ready.
           </p>
-          <button onClick={() => send("start")}>Deal the tiles</button>
+          <div className="row">
+            <button onClick={() => send("start")}>Deal the tiles</button>
+            {view.seats.length < 4 && (
+              <button className="quiet" onClick={() => send("addBot")}>
+                Add a bot
+              </button>
+            )}
+          </div>
+          {view.seats.some((s) => s.bot) && (
+            <div className="row">
+              {view.seats.map((s, i) =>
+                s.bot ? (
+                  <button
+                    key={i}
+                    className="quiet"
+                    onClick={() => send("removeBot", { seat: i })}
+                  >
+                    Remove 🤖 {s.name}
+                  </button>
+                ) : null
+              )}
+            </div>
+          )}
         </section>
       )}
 
