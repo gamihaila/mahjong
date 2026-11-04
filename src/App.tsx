@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import PartySocket from "partysocket";
-import { tileFace, tileLabel, type Tile } from "./tiles";
+import { tileLabel, type Tile } from "./tiles";
+import { TileSvg, TileBackSvg } from "./TileSvg";
 
 // Client for slices 1-3: connect to a room, take (or reclaim) a seat,
 // and render the redacted view the server sends — your rack large,
@@ -311,7 +312,7 @@ export default function App() {
                   <span key={mi} className="meld" title={m.kind}>
                     {m.tiles.map((t, ti) => (
                       <span key={ti} className="tile mini">
-                        {tileFace(t)}
+                        <TileSvg tile={t} />
                       </span>
                     ))}
                   </span>
@@ -404,7 +405,7 @@ export default function App() {
 
           {w && (
             <div className="window-box">
-              <span className="tile big">{tileFace(w.tile)}</span>
+              <span className="tile big"><TileSvg tile={w.tile} /></span>
               <div className="window-info">
                 {w.escrowSeat !== null ? (
                   <p>
@@ -530,7 +531,7 @@ export default function App() {
               <span className="pool-label">Discards:</span>
               {p.discards.map((t, i) => (
                 <span key={i} className="tile mini">
-                  {tileFace(t)}
+                  <TileSvg tile={t} />
                 </span>
               ))}
             </div>
@@ -583,17 +584,15 @@ export default function App() {
                         setDiscardIdx(discardIdx === i ? null : i);
                     }}
                   >
-                    {tileFace(t)}
+                    <TileSvg tile={t} />
                   </button>
                 );
               }
             )}
-            {w?.youEscrowed && <span className="tile facedown">?</span>}
+            {w?.youEscrowed && <span className="tile facedown"><TileBackSvg /></span>}
             {view.phase === "charleston" &&
               Array.from({ length: blind }, (_, i) => (
-                <span key={`blind-${i}`} className="tile facedown">
-                  ?
-                </span>
+                <span key={`blind-${i}`} className="tile facedown"><TileBackSvg /></span>
               ))}
           </div>
           {view.phase === "charleston" && c && (
