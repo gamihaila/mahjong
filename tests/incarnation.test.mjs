@@ -192,6 +192,49 @@ const totalTiles =
   roomB.state.hands.reduce((n, h) => n + h.length, 0) + roomB.state.wall.length;
 check("B: tile conservation across the boundary", totalTiles === 152, `=${totalTiles}`);
 
+// ---------- Part 2: the overdue wake ----------
+// A bot cue falls due while the object sleeps. The alarm that
+// wakes it IS that cue's deadline: the fresh incarnation must
+// execute the cue, not hand the bot a fresh delay. (When the
+// queue lived only in memory, every wake re-delayed every cue,
+// and under hibernation churn a routine bot move could be
+// postponed for minutes — the family4 stall.)
+const storage2 = makeStorage();
+const roomA2 = new Mahjong(makeCtx(storage2), {});
+await roomA2.onStart();
+const hostA2 = fakeConn();
+await roomA2.onConnect(hostA2, {
+  request: new Request(
+    "https://test/parties/mahjong/it2?token=host2-token&name=Host"
+  ),
+});
+await hostSay(roomA2, hostA2, "addBot");
+await hostSay(roomA2, hostA2, "addBot");
+await hostSay(roomA2, hostA2, "addBot");
+await hostSay(roomA2, hostA2, "start");
+const viewA2 = roomA2.viewFor(0);
+await hostSay(roomA2, hostA2, "pass", {
+  tiles: viewA2.yourTiles.slice(0, 3),
+  blind: 0,
+});
+const dueTimes = [...roomA2.botQueue.values()].map((e) => e.at);
+check(
+  "A2: three bot cues are pending",
+  dueTimes.length === 3,
+  `found ${dueTimes.length}`
+);
+// Let every cue fall overdue, then wake a fresh incarnation and
+// deliver its alarm immediately — the production sequence.
+await sleep(Math.max(...dueTimes) - Date.now() + 300);
+const roomB2 = new Mahjong(makeCtx(storage2), {});
+await roomB2.onStart();
+await roomB2.onAlarm();
+check(
+  "B2: the overdue cues execute on the wake, not re-delayed",
+  roomB2.state.charleston?.step === 1,
+  `step=${roomB2.state.charleston?.step}`
+);
+
 console.log(
   `\n${checks - failures}/${checks} checks passed${failures ? `, ${failures} FAILED` : ""}`
 );
