@@ -991,10 +991,25 @@ export class Mahjong extends Server<Env> {
           });
         }
       }
-    } else if (cmd.type === "reset" && s.phase !== "charleston") {
+    } else if (cmd.type === "reset") {
       // Reset is a lobby convenience and the friendly way to abandon
-      // a hand mid-play. Mid-Charleston it is refused on purpose:
-      // there the unanimous void vote is the only way out.
+      // a hand mid-play. Mid-Charleston it is normally refused: the
+      // unanimous void vote is the way out there, so one player
+      // can't vaporize a hand other humans are invested in. But
+      // when the requester is the only human at the table — solo,
+      // or with bots, who hold no stake — there is nobody to
+      // protect, and refusing would only trap them (this bit a solo
+      // player in a Charleston nobody else had joined). A refused
+      // reset explains itself instead of failing silently.
+      const onlyHuman =
+        seatIdx >= 0 &&
+        s.seats.every((seat, i) => i === seatIdx || seat.bot);
+      if (s.phase === "charleston" && !onlyHuman) {
+        send({
+          type: "note",
+          note: "Reset isn't available during the Charleston — propose voiding the hand instead.",
+        });
+      } else {
       s.phase = "lobby";
       s.hands = [];
       s.wall = [];
@@ -1002,6 +1017,7 @@ export class Mahjong extends Server<Env> {
       s.play = null;
       this.appendEvent("reset", seatIdx);
       applied = true;
+      }
     }
 
     if (applied) {
