@@ -47,10 +47,11 @@ export default function App() {
   useEffect(() => {
     const host =
       window.location.hostname === "localhost"
-        ? "localhost:1999"
+        ? "localhost:8787"
         : window.location.host;
     const socket = new PartySocket({
       host,
+      party: "mahjong",
       room: ROOM,
       query: {
         name: NAME,
