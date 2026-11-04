@@ -219,6 +219,11 @@ await hostSay(roomA2, hostA2, "pass", {
 });
 const dueTimes = [...roomA2.botQueue.values()].map((e) => e.at);
 check(
+  "A2: cue due times are integers (a fractional due time can read as not-due when its own alarm fires)",
+  dueTimes.every((x) => Number.isInteger(x)),
+  JSON.stringify(dueTimes)
+);
+check(
   "A2: three bot cues are pending",
   dueTimes.length === 3,
   `found ${dueTimes.length}`
