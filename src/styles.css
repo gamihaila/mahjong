@@ -143,9 +143,12 @@ button.tile:hover { background: linear-gradient(180deg, #fffdf5, #f1ead2); }
 .tile.selected {
   outline: 3px solid #facc15;
   outline-offset: -3px;
-  transform: translateY(-8px);
 }
-.tile.passed { opacity: 0.75; transform: translateY(-8px); }
+/* No lift effect: the rack wraps, and a translated tile slides
+   over the row above it (seen live: the escrowed pass tiles in
+   the bottom row tucked under the row above). The gold outline
+   and the dimming carry the meaning on their own. */
+.tile.passed { opacity: 0.75; }
 .tile.facedown {
   background: linear-gradient(180deg, #166534, #14532d);
   color: #bbf7d0;
