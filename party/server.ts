@@ -1141,7 +1141,12 @@ export class Mahjong extends Server<Env> {
                 : key === "void"
                   ? 500 + Math.random() * 400
                   : 800 + Math.random() * 800;
-        const at = Date.now() + delay;
+        // Integer due time, rounded UP: the random delays are
+        // fractional, and a cue due at T.6 is "not due" when its
+        // alarm fires at T — the handler then executes nothing and
+        // re-arms for T.6, an immediate re-arm the platform may
+        // deliver tens of seconds late (measured: 7-59s stalls).
+        const at = Math.ceil(Date.now() + delay);
         this.botQueue.set(seat, { key, at });
         console.log(
           `CUE created seat=${seat} key=${key} at=${at} now=${Date.now()}`
@@ -1183,7 +1188,10 @@ export class Mahjong extends Server<Env> {
   async runDueBots() {
     const now = Date.now();
     for (const [seat, entry] of [...this.botQueue.entries()]) {
-      if (entry.at > now) continue;
+      // 2ms tolerance: never leave a wake with nothing executed
+      // over a boundary hair — an unexecuted overdue cue means an
+      // immediate re-arm, whose delivery latency is unbounded.
+      if (entry.at > now + 2) continue;
       this.botQueue.delete(seat);
       if (this.botObligation(seat) !== entry.key) continue;
       const view = this.viewFor(seat) as unknown as BotView;
