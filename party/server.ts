@@ -1054,7 +1054,6 @@ export class Mahjong extends Server<Env> {
 
   botQueue = new Map<number, { key: string; at: number }>();
   botAttempts = new Map<string, { version: number; count: number }>();
-  botSeq = 0;
 
   /** What a bot seat currently owes the game, if anything: a
    *  Charleston pass, a window response, a draw, a turn action, or
@@ -1170,7 +1169,14 @@ export class Mahjong extends Server<Env> {
       const applied = await this.dispatchCommand(
         seat,
         {
-          id: `bot-${++this.botSeq}`,
+          // Unique per dispatch, across object incarnations: a
+          // per-instance counter restarts at zero whenever the
+          // object wakes fresh, and its recycled ids collide with
+          // the persisted processedIds — the duplicate check then
+          // silently swallows the bot's move (seen live: after the
+          // room's first bot pass, every later bot action in a new
+          // incarnation was treated as a retry and dropped).
+          id: `bot-${crypto.randomUUID()}`,
           baseVersion: this.state.version,
           ...cmd,
         },
