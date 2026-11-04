@@ -176,6 +176,26 @@ function freshPlay(n: number): PlayState {
   };
 }
 
+/** Shape check for state loaded from storage. Rooms persist across
+ *  deploys, and an older build's state (say, a slice-1 room in phase
+ *  "dealt", with no Charleston or play fields) is unplayable by this
+ *  code: no panel renders for it and nobody can act. Such state is
+ *  dropped on load so the room heals itself instead of wedging. */
+function isValidShape(s: GameState): boolean {
+  const phases: Phase[] = ["lobby", "charleston", "playing", "over"];
+  return (
+    phases.includes(s.phase) &&
+    Array.isArray(s.seats) &&
+    Array.isArray(s.hands) &&
+    Array.isArray(s.wall) &&
+    Array.isArray(s.log) &&
+    Array.isArray(s.processedIds) &&
+    typeof s.version === "number" &&
+    (s.phase !== "charleston" || s.charleston != null) &&
+    (s.phase !== "playing" && s.phase !== "over" ? true : s.play != null)
+  );
+}
+
 function freshState(): GameState {
   return {
     phase: "lobby",
@@ -251,7 +271,11 @@ export class Mahjong extends Server<Env> {
 
   async onStart() {
     const saved = await this.ctx.storage.get<GameState>("state");
-    if (saved) this.state = saved;
+    if (saved && isValidShape(saved)) {
+      this.state = saved;
+    } else if (saved) {
+      await this.ctx.storage.delete("state");
+    }
   }
 
   async persist() {
@@ -345,6 +369,13 @@ export class Mahjong extends Server<Env> {
     if (seatIdx >= 0) {
       // Reconnect: reclaim the seat (and its rack) with the token.
       s.seats[seatIdx].connected = true;
+    } else if (s.phase !== "lobby") {
+      // A hand is in progress. A brand-new seat would have no rack
+      // and no place in the Charleston barrier, so it is refused;
+      // token reconnects (above) are always welcome.
+      conn.send(JSON.stringify({ type: "error", error: "hand-in-progress" }));
+      conn.close();
+      return;
     } else if (s.seats.length < MAX_SEATS) {
       seatIdx = s.seats.length;
       s.seats.push({
