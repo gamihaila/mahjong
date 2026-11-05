@@ -8,17 +8,13 @@ One room is one actor — a Cloudflare Durable Object, single-threaded, holding 
 
 One more decision is worth naming: when a tile is discarded, it can be claimed until the next player draws — and the drawn tile waits briefly in escrow, so a claim can still preempt it. A mahjong claim is a small distributed transaction wearing a tile's clothes.
 
-## Four bugs, one boundary
+## The actor sleeps
 
-Every serious bug we hit lived at the same seam: the actor sleeps. Durable Objects hibernate between events and wake with their memory wiped. In local development the object never sleeps, so all four bugs were production-only. Each taught the same lesson from a different side.
+Every serious bug we hit lived at the same seam: the actor sleeps. Durable Objects hibernate between events and wake with their memory wiped. In local development the object never sleeps, so none of these bugs existed there — every one of them was production-only.
 
-**1. The promise nobody awaited.** The bots were scheduled by arming an alarm without awaiting the call. Hibernation dropped the un-awaited promise, and the bots silently stopped moving. Work you don't await is work you haven't done.
+Three of them I will tell in one breath, because underneath, they are the same bug. We armed a timer for the bots without awaiting the call, and hibernation dropped the un-awaited work. We numbered bot commands with an in-memory counter, and after a restart its new IDs collided with the persisted idempotency log, so the server — quite correctly — ignored the fresh commands as duplicates. We kept the bots' pacing as relative delays, *act in 900 milliseconds*, and every wake re-applied the delay, so an overdue move could be postponed wake after wake. A promise, a counter, a queue of delays: each was something the actor believed about itself that did not survive a nap.
 
-**2. The counter that forgot.** Bot commands carried IDs from an in-memory counter: bot-1, bot-2, ... After a restart the counter reset, the new IDs collided with the persisted idempotency log, and the server quite correctly ignored the "duplicate" commands. Anything that meets durable storage must be unique across incarnations. The IDs are UUIDs now.
-
-**3. Relative time.** Bot pacing was a queue of delays kept in memory — act in 900 milliseconds. Every wake re-applied the delay, so an overdue action could be postponed wake after wake, indefinitely. Pending work is now persisted with absolute due times, checked against the server's clocks. The client's clock never gets a vote.
-
-**4. The fractional millisecond.** This one is my favorite. The due times included fractional delays — act at 1413.7 milliseconds. The alarm fired on the integer millisecond, the cue read as "not due" by a fraction, and the handler re-armed for an instant already past — and those immediate re-arms were delivered 7 to 59 *seconds* late. Due times are integers now. After the fix, 33 consecutive bot actions executed 0 to 19 milliseconds after they were due. As I wrote to Muse at the time: oh, it's snappy now.
+The fourth deserves its own paragraph. The bots' due times included fractional delays — act at 1413.7 milliseconds. The alarm fired on the integer millisecond, the cue read as "not due" by that fraction, and the handler re-armed for an instant already past — and those immediate re-arms were delivered 7 to 59 *seconds* late. First alarms were always punctual; only the re-arms wandered, which is how the logs eventually confessed. Due times are integers now, rounded up, checked against the server's clocks alone. After the fix we measured 33 consecutive bot actions executing 0 to 19 milliseconds after they were due. As I wrote to Muse at the time: oh, it's snappy now.
 
 If there is one sentence to take from our game to your system, it is this: *anything an actor keeps only in memory is a lie it tells itself between naps.*
 
