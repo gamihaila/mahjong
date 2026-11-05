@@ -15,6 +15,10 @@
 // already contains them, every one is swallowed as a "duplicate",
 // and the step never completes — deterministically.
 //
+// The host drives the room through the same joinSeat/runCommand
+// surface the HTTP endpoints use (the transport itself — fetch
+// in, JSON out — is covered by tests/restart-smoke.mjs).
+//
 // Run: npm run test:incarnation
 
 import { Mahjong } from "./.build/server.mjs";
@@ -70,35 +74,15 @@ function makeCtx(storage) {
   };
 }
 
-// --- A fake connection: just what the room's handlers touch.
-function fakeConn() {
-  return {
-    id: `fake-${Math.random().toString(36).slice(2)}`,
-    state: null,
-    inbox: [],
-    setState(patch) {
-      this.state = { ...(this.state ?? {}), ...patch };
-    },
-    send(str) {
-      this.inbox.push(JSON.parse(str));
-    },
-    close() {},
-    lastView() {
-      for (let i = this.inbox.length - 1; i >= 0; i--) {
-        if (this.inbox[i].type === "view") return this.inbox[i];
-      }
-      return null;
-    },
-  };
-}
-
-async function hostSay(room, conn, type, extra = {}) {
-  const view = conn.lastView() ?? room.viewFor(0);
+async function hostSay(room, seat, type, extra = {}) {
+  const view = room.viewFor(seat);
   const id = `host-${Math.random().toString(36).slice(2)}`;
-  await room.onMessage(
-    conn,
-    JSON.stringify({ id, baseVersion: view?.version ?? 0, type, ...extra })
-  );
+  await room.runCommand(seat, {
+    id,
+    baseVersion: view?.version ?? 0,
+    type,
+    ...extra,
+  });
 }
 
 // Deliver alarms on this incarnation until the Charleston step
@@ -118,23 +102,19 @@ const storage = makeStorage();
 // ---------- Incarnation A ----------
 const roomA = new Mahjong(makeCtx(storage), {});
 await roomA.onStart();
-const hostA = fakeConn();
-await roomA.onConnect(hostA, {
-  request: new Request(
-    "https://test/parties/mahjong/it?token=host-token&name=Host"
-  ),
-});
-check("A: host seated", hostA.state?.seat === 0);
-await hostSay(roomA, hostA, "addBot");
-await hostSay(roomA, hostA, "addBot");
-await hostSay(roomA, hostA, "addBot");
+const joinedA = await roomA.joinSeat("Host", "");
+check("A: host seated", joinedA.seat === 0);
+const hostToken = joinedA.token;
+await hostSay(roomA, 0, "addBot");
+await hostSay(roomA, 0, "addBot");
+await hostSay(roomA, 0, "addBot");
 check("A: full table", roomA.state.seats.length === 4);
-await hostSay(roomA, hostA, "start");
+await hostSay(roomA, 0, "start");
 check("A: charleston began", roomA.state.phase === "charleston");
 
 for (const step of [0, 1]) {
   const view = roomA.viewFor(0);
-  await hostSay(roomA, hostA, "pass", {
+  await hostSay(roomA, 0, "pass", {
     tiles: view.yourTiles.slice(0, 3),
     blind: 0,
   });
@@ -160,17 +140,14 @@ check(
   `phase=${roomB.state.phase} step=${roomB.state.charleston?.step}`
 );
 
-// The host's browser reconnects after the nap and reclaims its seat.
-const hostB = fakeConn();
-await roomB.onConnect(hostB, {
-  request: new Request(
-    "https://test/parties/mahjong/it?token=host-token&name=Host"
-  ),
-});
-check("B: host reclaims seat 0 by token", hostB.state?.seat === 0);
+// The host's page reloads after the nap and rejoins with its
+// token, reclaiming the seat — no connection involved.
+const joinedB = await roomB.joinSeat("Host", hostToken);
+check("B: host reclaims seat 0 by token", joinedB.seat === 0);
+check("B: no duplicate seat created", roomB.state.seats.length === 4);
 
 const viewB = roomB.viewFor(0);
-await hostSay(roomB, hostB, "pass", {
+await hostSay(roomB, 0, "pass", {
   tiles: viewB.yourTiles.slice(0, 3),
   blind: 0,
 });
@@ -202,18 +179,13 @@ check("B: tile conservation across the boundary", totalTiles === 152, `=${totalT
 const storage2 = makeStorage();
 const roomA2 = new Mahjong(makeCtx(storage2), {});
 await roomA2.onStart();
-const hostA2 = fakeConn();
-await roomA2.onConnect(hostA2, {
-  request: new Request(
-    "https://test/parties/mahjong/it2?token=host2-token&name=Host"
-  ),
-});
-await hostSay(roomA2, hostA2, "addBot");
-await hostSay(roomA2, hostA2, "addBot");
-await hostSay(roomA2, hostA2, "addBot");
-await hostSay(roomA2, hostA2, "start");
+await roomA2.joinSeat("Host", "");
+await hostSay(roomA2, 0, "addBot");
+await hostSay(roomA2, 0, "addBot");
+await hostSay(roomA2, 0, "addBot");
+await hostSay(roomA2, 0, "start");
 const viewA2 = roomA2.viewFor(0);
-await hostSay(roomA2, hostA2, "pass", {
+await hostSay(roomA2, 0, "pass", {
   tiles: viewA2.yourTiles.slice(0, 3),
   blind: 0,
 });
