@@ -4,6 +4,7 @@
 * { box-sizing: border-box; }
 
 html, body { height: 100%; }
+html { -webkit-text-size-adjust: 100%; }
 
 body {
   overflow: hidden; /* the board is the screen; the page never scrolls */
@@ -28,7 +29,20 @@ body {
   height: 100vh;
   height: 100dvh;
   overflow-y: auto;
+  overflow-x: hidden;
 }
+
+/* Flex items default to min-width: auto — never shrink below
+   content size. iOS Safari reads "content size" there as the
+   MAX-content (a whole unwrapped sentence), so on iPhones the
+   seat rows and panels sized themselves by their longest line
+   and ran off the right edge. Opt every shell child out of that
+   floor, and let the flexible parts of a seat row compress. */
+.app > * { min-width: 0; }
+.seats, .seat, .panel, .rack { max-width: 100%; }
+.seat-head { min-width: 0; }
+.backs { min-width: 0; flex: 0 1 auto; }
+.panel p { max-width: 100%; }
 
 header h1 { font-size: 20px; margin: 0 0 2px; }
 .status { margin: 0; font-size: 14px; opacity: 0.75; }
