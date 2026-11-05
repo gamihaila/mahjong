@@ -128,10 +128,11 @@ export default function App() {
   const [idCounter] = useState(() => ({ n: 0 }));
 
   // Charleston pass composition: indices into the combined rack
-  // (hand tiles followed by the escrowed pass), plus a blind count
-  // on the last pass of each Charleston.
+  // (hand tiles followed by the escrowed pass). On the last pass of
+  // each Charleston the blind count is not a separate control: it
+  // is inferred — however many of the 3 pass tiles you did NOT
+  // select from your own rack are forwarded unseen.
   const [selected, setSelected] = useState<number[]>([]);
-  const [blind, setBlind] = useState(0);
   const [touched, setTouched] = useState(false);
   // Play loop: the rack index selected to discard.
   const [discardIdx, setDiscardIdx] = useState<number | null>(null);
@@ -150,14 +151,12 @@ export default function App() {
   // the escrowed pass pre-selected until the player touches the rack.
   useEffect(() => {
     setSelected([]);
-    setBlind(0);
     setTouched(false);
   }, [step, view?.phase]);
   useEffect(() => {
     if (c && !touched && c.yourPass.length > 0 && view) {
       const base = view.yourTiles.length;
       setSelected(c.yourPass.map((_, i) => base + i));
-      setBlind(c.yourBlind);
     }
   }, [c?.yourPass, touched]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => setDiscardIdx(null), [view?.version]);
@@ -244,32 +243,25 @@ export default function App() {
   const selectedTiles = selected
     .map((i) => rackTiles[i])
     .filter((t): t is Tile => t !== undefined);
+  // Inferred blind count on blind steps: the shortfall between the
+  // tiles you selected and the 3 a pass requires.
+  const blindCount = isBlindStep
+    ? Math.max(0, 3 - selectedTiles.length)
+    : 0;
 
   function toggleTile(i: number) {
     if (view?.phase !== "charleston") return;
     setTouched(true);
     setSelected((sel) => {
       if (sel.includes(i)) return sel.filter((x) => x !== i);
-      if (sel.length >= 3 - (isBlindStep ? blind : 0)) return sel;
+      if (sel.length >= 3) return sel;
       return [...sel, i];
     });
   }
 
   function submitPass() {
-    if (selectedTiles.length + (isBlindStep ? blind : 0) !== 3) return;
-    send("pass", { tiles: selectedTiles, blind: isBlindStep ? blind : 0 });
-  }
-
-  // Setting the blind count must work in either order: tiles first
-  // or blind first. Raising blind past the current selection trims
-  // the selection (newest first) so selected + blind <= 3 always,
-  // instead of capping the blind input at 3 - selected, which left
-  // players who selected first unable to borrow any tiles at all.
-  function changeBlind(n: number) {
-    const b = Math.max(0, Math.min(3, Number.isFinite(n) ? n : 0));
-    setBlind(b);
-    setTouched(true);
-    setSelected((sel) => sel.slice(0, Math.max(0, 3 - b)));
+    if (selectedTiles.length + blindCount !== 3) return;
+    send("pass", { tiles: selectedTiles, blind: blindCount });
   }
 
   // ---- play-loop state ----
@@ -684,33 +676,29 @@ export default function App() {
             )}
             {w?.youEscrowed && <span className="tile facedown"><TileBackSvg /></span>}
             {view.phase === "charleston" &&
-              Array.from({ length: blind }, (_, i) => (
+              Array.from({ length: blindCount }, (_, i) => (
                 <span key={`blind-${i}`} className="tile facedown"><TileBackSvg /></span>
               ))}
           </div>
           {view.phase === "charleston" && c && (
             <div className="passbar">
               {isBlindStep && (
-                <label>
-                  Blind (forward unseen):{" "}
-                  <input
-                    type="number"
-                    min={0}
-                    max={3}
-                    value={blind}
-                    onChange={(e) => changeBlind(Number(e.target.value) || 0)}
-                  />
-                </label>
+                <span className="blind-hint">
+                  Blind pass: any of the 3 you don’t pick from your rack
+                  are forwarded unseen.
+                </span>
               )}
               <button
-                disabled={
-                  selectedTiles.length + (isBlindStep ? blind : 0) !== 3
-                }
+                disabled={selectedTiles.length + blindCount !== 3}
                 onClick={submitPass}
               >
                 {submitted ? "Amend pass" : "Submit pass"} (
-                {isBlindStep && blind > 0
-                  ? `${selectedTiles.length} + ${blind} blind`
+                {isBlindStep
+                  ? blindCount === 3
+                    ? "all 3 blind"
+                    : blindCount > 0
+                      ? `${selectedTiles.length} own + ${blindCount} blind`
+                      : "3 own"
                   : `${selectedTiles.length}/3`}
                 )
               </button>
