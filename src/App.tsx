@@ -53,9 +53,7 @@ interface PlayView {
   drawGame: boolean;
   winInfo: {
     section: string;
-    points: number;
     display: string;
-    concealed: boolean;
   } | null;
 }
 
@@ -832,9 +830,7 @@ export default function App() {
           </h2>
           {p.winInfo && (
             <p>
-              {p.winInfo.section} · {p.winInfo.display} ·{" "}
-              {p.winInfo.points} points
-              {p.winInfo.concealed ? " · concealed" : ""}
+              {p.winInfo.section} · {p.winInfo.display}
             </p>
           )}
           <button onClick={() => send("reset")}>Back to the lobby</button>
