@@ -179,12 +179,23 @@ export default function App() {
     view?: View;
     messages?: { type: string; note?: string }[];
   }> {
-    const r = await fetch(`/parties/mahjong/${encodeURIComponent(room)}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    return r.json();
+    const attempt = async (): Promise<any> => {
+      const r = await fetch(`/parties/mahjong/${encodeURIComponent(room)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return r.json();
+    };
+    try {
+      return await attempt();
+    } catch {
+      // One retry on a transport failure. Safe for every action:
+      // commands carry idempotency ids (a landed command acks as a
+      // duplicate), join is keyed by the proposed token, polls are
+      // pure reads.
+      return attempt();
+    }
   }
 
   function handleSeatLoss() {
@@ -193,14 +204,30 @@ export default function App() {
     setStatus("Your seat was removed \u2014 rejoin to play.");
   }
 
+  // Views are applied monotonically: a poll and a command can be
+  // in flight together, and the older response must never land
+  // after the fresher one and regress the screen — selections are
+  // indices into the view's tile arrays, so a regressed view can
+  // silently re-point a chosen tile.
+  const applyView = (next: View) =>
+    setView((prev) => (prev && next.version < prev.version ? prev : next));
+
   async function connect() {
     localStorage.setItem("mj-name", name);
     const tokenKey = `mj-token-${room}`;
+    // Persist the proposed token BEFORE the first join: a join
+    // whose response is lost (or a double-tapped button) retries
+    // with the same proposal and lands in the same seat.
+    let proposed = localStorage.getItem(tokenKey) ?? "";
+    if (!proposed) {
+      proposed = crypto.randomUUID();
+      localStorage.setItem(tokenKey, proposed);
+    }
     try {
       const res = await api({
         action: "join",
         name: name || "Player",
-        token: localStorage.getItem(tokenKey) ?? "",
+        token: proposed,
       });
       if (res.type === "error" || !res.view) {
         setStatus(`Couldn't join: ${res.error ?? "no response"}`);
@@ -208,7 +235,7 @@ export default function App() {
       }
       tokenRef.current = res.token ?? "";
       if (res.token) localStorage.setItem(tokenKey, res.token);
-      setView(res.view);
+      applyView(res.view);
       setStatus("");
       setJoined(true);
     } catch {
@@ -238,7 +265,7 @@ export default function App() {
       for (const m of res.messages ?? []) {
         if (m.type === "note" && m.note) setStatus(m.note);
       }
-      if (res.view) setView(res.view);
+      if (res.view) applyView(res.view);
       setNetDown(false);
     } catch {
       setNetDown(true);
@@ -265,7 +292,7 @@ export default function App() {
           w.passed.includes(v.you);
         return responded ? 1500 : 1000;
       }
-      return v.play.turn === v.you ? 10000 : 2000;
+      return v.play.turn === v.you ? 10000 : 750;
     }
     return 3000;
   }
@@ -277,33 +304,57 @@ export default function App() {
     if (!joined) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Single-flight: exactly one chain, ever. A wake that lands
+    // while a fetch is in flight folds into `again` instead of
+    // starting a rival loop (the naive version leaks a loop per
+    // wake — each reschedule overwrote the pending timer handle
+    // without clearing it).
+    let running = false;
+    let again = false;
     const tick = async () => {
-      if (cancelled) return;
-      if (document.visibilityState === "visible" && tokenRef.current) {
-        try {
-          const res = await api({
-            action: "poll",
-            token: tokenRef.current,
-            since: viewRef.current?.version ?? -1,
-          });
-          if (res.type === "error") {
-            if (res.error === "unknown-seat") {
-              handleSeatLoss();
-              return;
-            }
-          } else if (res.view) {
-            setView(res.view);
-          }
-          setNetDown(false);
-        } catch {
-          setNetDown(true);
-        }
+      if (cancelled || running) {
+        again = true;
+        return;
       }
-      if (!cancelled) timer = setTimeout(tick, pollDelayMs(viewRef.current));
+      running = true;
+      try {
+        if (document.visibilityState === "visible" && tokenRef.current) {
+          try {
+            const cur = viewRef.current;
+            const res = await api({
+              action: "poll",
+            token: tokenRef.current,
+              since: cur?.version ?? -1,
+              sig: cur
+                ? cur.seats.map((s) => (s.connected ? "1" : "0")).join("")
+                : "",
+            });
+            if (res.type === "error") {
+              if (res.error === "unknown-seat") {
+                handleSeatLoss();
+                return;
+              }
+            } else if (res.view) {
+              applyView(res.view);
+            }
+            setNetDown(false);
+          } catch {
+            setNetDown(true);
+          }
+        }
+      } finally {
+        running = false;
+      }
+      if (!cancelled) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(tick, again ? 0 : pollDelayMs(viewRef.current));
+        again = false;
+      }
     };
     pollNowRef.current = () => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(tick, 0);
+      if (running) again = true;
+      else timer = setTimeout(tick, 0);
     };
     timer = setTimeout(tick, pollDelayMs(viewRef.current));
     return () => {
