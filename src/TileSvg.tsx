@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { Tile } from "./tiles";
 
 // SVG tile faces, drawn to a 60x84 viewBox that matches the tile
@@ -486,7 +487,7 @@ function Joker() {
   );
 }
 
-export function TileSvg({ tile }: { tile: Tile }) {
+export const TileSvg = memo(function TileSvg({ tile }: { tile: Tile }) {
   const suited = "btc".includes(tile[0]) && tile.length === 2;
   const rank = suited ? Number(tile.slice(1)) : 0;
   return (
@@ -522,7 +523,7 @@ export function TileSvg({ tile }: { tile: Tile }) {
       )}
     </svg>
   );
-}
+});
 
 /** The face-down side: green with a lattice, for escrowed draws. */
 export function TileBackSvg() {
