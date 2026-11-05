@@ -638,6 +638,12 @@ export class Mahjong extends Server<Env> {
     } catch {
       return;
     }
+    // Liveness probe (client wake-up check): answered directly,
+    // never enters the command pipeline or the bot driver.
+    if ((cmd as { type?: string }).type === "ping") {
+      conn.send(JSON.stringify({ type: "pong" }));
+      return;
+    }
     await this.dispatchCommand(this.seatOf(conn), cmd, (obj) =>
       conn.send(JSON.stringify(obj))
     );
