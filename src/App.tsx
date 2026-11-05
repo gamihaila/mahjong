@@ -260,6 +260,18 @@ export default function App() {
     send("pass", { tiles: selectedTiles, blind: isBlindStep ? blind : 0 });
   }
 
+  // Setting the blind count must work in either order: tiles first
+  // or blind first. Raising blind past the current selection trims
+  // the selection (newest first) so selected + blind <= 3 always,
+  // instead of capping the blind input at 3 - selected, which left
+  // players who selected first unable to borrow any tiles at all.
+  function changeBlind(n: number) {
+    const b = Math.max(0, Math.min(3, Number.isFinite(n) ? n : 0));
+    setBlind(b);
+    setTouched(true);
+    setSelected((sel) => sel.slice(0, Math.max(0, 3 - b)));
+  }
+
   // ---- play-loop state ----
   const w = p?.window ?? null;
   const myTurn = !!p && p.turn === you && view?.phase === "playing";
@@ -684,28 +696,23 @@ export default function App() {
                   <input
                     type="number"
                     min={0}
-                    max={3 - selectedTiles.length}
+                    max={3}
                     value={blind}
-                    onChange={(e) =>
-                      setBlind(
-                        Math.max(
-                          0,
-                          Math.min(
-                            3 - selectedTiles.length,
-                            Number(e.target.value) || 0
-                          )
-                        )
-                      )
-                    }
+                    onChange={(e) => changeBlind(Number(e.target.value) || 0)}
                   />
                 </label>
               )}
               <button
-                disabled={selectedTiles.length + blind !== 3}
+                disabled={
+                  selectedTiles.length + (isBlindStep ? blind : 0) !== 3
+                }
                 onClick={submitPass}
               >
                 {submitted ? "Amend pass" : "Submit pass"} (
-                {selectedTiles.length + blind}/3)
+                {isBlindStep && blind > 0
+                  ? `${selectedTiles.length} + ${blind} blind`
+                  : `${selectedTiles.length}/3`}
+                )
               </button>
             </div>
           )}
