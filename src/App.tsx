@@ -166,20 +166,72 @@ export default function App() {
     p?.window?.escrowDeadline != null;
   const now = useNow(waiting, 500);
 
+  // Liveness probe: after the page wakes (unlock, tab switch back,
+  // network return), an apparently-open socket may be a zombie —
+  // iOS drops the connection while the app is backgrounded without
+  // delivering a close event. Probe it; no answer, force reconnect.
+  const probeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function pokeSocket() {
+    const socket = socketRef.current;
+    if (!socket) return;
+    if (socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+      socket.reconnect();
+      return;
+    }
+    if (socket.readyState !== WebSocket.OPEN) return;
+    if (probeTimer.current) clearTimeout(probeTimer.current);
+    probeTimer.current = setTimeout(() => socket.reconnect(), 3500);
+    try {
+      socket.send(JSON.stringify({ type: "ping" }));
+    } catch {
+      socket.reconnect();
+    }
+  }
+
+  useEffect(() => {
+    const onWake = () => {
+      if (document.visibilityState === "visible") pokeSocket();
+    };
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("pageshow", onWake);
+    window.addEventListener("online", pokeSocket);
+    return () => {
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("pageshow", onWake);
+      window.removeEventListener("online", pokeSocket);
+      if (probeTimer.current) clearTimeout(probeTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function connect() {
     localStorage.setItem("mj-name", name);
     const tokenKey = `mj-token-${room}`;
-    const token = localStorage.getItem(tokenKey) ?? "";
     const socket = new PartySocket({
       host: location.host,
       party: "mahjong",
       room,
-      query: { name: name || "Player", token },
+      // A query FUNCTION is re-evaluated on every reconnect attempt,
+      // so a reconnection always carries the CURRENT seat token —
+      // including one issued by the seated message moments earlier.
+      // (A static query froze the token from page load: reconnects
+      // after stepping away rejoined as strangers, or not at all.)
+      query: () => ({
+        name: name || "Player",
+        token: localStorage.getItem(tokenKey) ?? "",
+      }),
     });
     socketRef.current = socket;
     socket.addEventListener("open", () => setStatus("Connected"));
-    socket.addEventListener("close", () => setStatus("Disconnected"));
+    socket.addEventListener("close", () =>
+      setStatus("Disconnected — reconnecting…")
+    );
     socket.addEventListener("message", (e) => {
+      if (probeTimer.current) {
+        clearTimeout(probeTimer.current);
+        probeTimer.current = null;
+      }
       const msg = JSON.parse(e.data as string);
       if (msg.type === "seated") {
         localStorage.setItem(tokenKey, msg.token);
