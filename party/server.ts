@@ -1,10 +1,5 @@
 /// <reference types="@cloudflare/workers-types" />
-import {
-  Server,
-  routePartykitRequest,
-  type Connection,
-  type ConnectionContext,
-} from "partyserver";
+import { Server, routePartykitRequest } from "partyserver";
 import { buildWall, shuffle, sortTiles, type Tile } from "../src/tiles";
 import { CARD_2026, findWin, type WinInfo } from "../src/card";
 import {
@@ -19,14 +14,19 @@ import {
 // Object actor model, deployed with wrangler to our own Cloudflare
 // account). Slices 1-3 of the design in DESIGN.md:
 // - One room = one Durable Object = a single-threaded actor. Every
-//   command is serialized through onMessage, so the game has a total
+//   command is serialized through onRequest, so the game has a total
 //   order of events by construction.
 // - Event-sourced: clients send commands, never state. A legal command
 //   appends an event to the log; state is the fold of that log (kept
 //   materialized, snapshotted into the object's storage).
 // - Redaction: the full state (wall, racks, escrowed tiles and passes)
-//   never leaves this object. Each connection receives a per-seat view
+//   never leaves this object. Each client receives a per-seat view
 //   computed here: own tiles, everyone else's public information.
+// - Transport: plain HTTP request/response — no sockets. Clients
+//   POST commands and poll for views by version number. Every
+//   request is self-contained (the seat token travels in the body),
+//   so a frozen, killed or reloaded page recovers with its next
+//   request; there is no connection state to go stale.
 // - Commands carry a client-generated id (deduplicated: at-least-once
 //   delivery, exactly-once effect) and the state version the client
 //   acted on (CAS: a mismatch is answered with "stale" + fresh view).
@@ -62,6 +62,10 @@ interface Seat {
   token: string;
   connected: boolean;
   bot: boolean;
+  /** Last request heard from this seat (ms epoch). Presence is
+   *  derived from it — see isPresent — rather than tracked by a
+   *  connection that may or may not still exist. */
+  lastSeen?: number;
 }
 
 interface GameEvent {
@@ -151,9 +155,6 @@ interface Command {
 interface Env {
   Mahjong: DurableObjectNamespace<Mahjong>;
 }
-
-type ConnState = { seat: number };
-type Conn = Connection<ConnState>;
 
 const MAX_SEATS = 4;
 const PROCESSED_CAP = 200;
@@ -333,7 +334,7 @@ export class Mahjong extends Server<Env> {
       yourTiles: sortTiles(myPass ? subtract(rack, myPass.tiles) : rack),
       seats: s.seats.map((seat, i) => ({
         name: seat.name,
-        connected: seat.connected,
+        connected: this.isPresent(seat),
         bot: seat.bot,
         tileCount: s.hands[i]?.length ?? 0,
       })),
@@ -381,68 +382,146 @@ export class Mahjong extends Server<Env> {
     };
   }
 
-  seatOf(conn: Conn): number {
-    return (conn.state as ConnState | null)?.seat ?? -1;
+  /** Presence, polling-style: a seat counts as present if a
+   *  request arrived from it recently. This is more honest than
+   *  the socket version \u2014 a connection object claims presence
+   *  even when the phone that owns it is asleep in a pocket,
+   *  while a last-seen timestamp is exactly as stale as it says.
+   *  It also feeds game rules: a seat absent past this window is
+   *  one whose exposed jokers may be exchanged with and whose
+   *  lobby seat may be removed. */
+  isPresent(seat: Seat): boolean {
+    return seat.bot || Date.now() - (seat.lastSeen ?? 0) < 15000;
   }
 
-  broadcastViews() {
-    for (const conn of this.getConnections<ConnState>()) {
-      conn.send(JSON.stringify(this.viewFor(this.seatOf(conn))));
+  seatByToken(token: string): number {
+    if (!token) return -1;
+    return this.state.seats.findIndex((seat) => seat.token === token);
+  }
+
+  touchPresence(seatIdx: number) {
+    const seat = this.state.seats[seatIdx];
+    if (seat) {
+      seat.lastSeen = Date.now();
+      seat.connected = true;
     }
   }
 
-  async onConnect(conn: Conn, ctx: ConnectionContext) {
-    const url = new URL(ctx.request.url);
-    const token = url.searchParams.get("token") ?? "";
-    const name = url.searchParams.get("name") ?? "Player";
+  /** Seat assignment, shared by the HTTP join endpoint and the
+   *  tests. A known token reclaims its seat (and its rack) at any
+   *  time; a new seat is dealt only in the lobby. */
+  async joinSeat(
+    name: string,
+    token: string
+  ): Promise<{ seat: number; token: string } | { error: string }> {
     const s = this.state;
-
-    let seatIdx = s.seats.findIndex((seat) => seat.token === token);
+    let seatIdx = s.seats.findIndex(
+      (seat) => token !== "" && seat.token === token
+    );
     if (seatIdx >= 0) {
-      // Reconnect: reclaim the seat (and its rack) with the token.
-      s.seats[seatIdx].connected = true;
-    } else if (s.phase !== "lobby") {
+      this.touchPresence(seatIdx);
+      await this.persist();
+      return { seat: seatIdx, token: s.seats[seatIdx].token };
+    }
+    if (s.phase !== "lobby") {
       // A hand is in progress. A brand-new seat would have no rack
       // and no place in the Charleston barrier, so it is refused;
-      // token reconnects (above) are always welcome.
-      conn.send(JSON.stringify({ type: "error", error: "hand-in-progress" }));
-      conn.close();
-      return;
-    } else if (s.seats.length < MAX_SEATS) {
-      seatIdx = s.seats.length;
-      s.seats.push({
-        name,
-        token: token || crypto.randomUUID(),
-        connected: true,
-        bot: false,
-      });
-      this.appendEvent("join", seatIdx, name);
-      s.version++;
-    } else {
-      conn.send(JSON.stringify({ type: "error", error: "room-full" }));
-      conn.close();
-      return;
+      // token rejoins (above) are always welcome.
+      return { error: "hand-in-progress" };
     }
-
-    conn.setState({ seat: seatIdx });
-    conn.send(
-      JSON.stringify({
-        type: "seated",
-        seat: seatIdx,
-        token: s.seats[seatIdx].token,
-      })
-    );
+    if (s.seats.length >= MAX_SEATS) return { error: "room-full" };
+    seatIdx = s.seats.length;
+    const fresh = crypto.randomUUID();
+    s.seats.push({
+      name: name || "Player",
+      token: fresh,
+      connected: true,
+      bot: false,
+      lastSeen: Date.now(),
+    });
+    this.appendEvent("join", seatIdx, name || "Player");
+    s.version++;
     await this.persist();
-    this.broadcastViews();
+    return { seat: seatIdx, token: fresh };
   }
 
-  async onClose(conn: Conn) {
-    const seatIdx = this.seatOf(conn);
-    if (seatIdx >= 0 && this.state.seats[seatIdx]) {
-      this.state.seats[seatIdx].connected = false;
-      await this.persist();
-      this.broadcastViews();
+  /** One command through dispatchCommand with its direct replies
+   *  (ack / rejected / stale / note) captured, plus the bot driver
+   *  run the socket handler used to trigger. The response always
+   *  carries the requester's fresh view, so a command round-trip
+   *  is also a sync. */
+  async runCommand(
+    seatIdx: number,
+    cmd: Command
+  ): Promise<{ messages: object[]; view: object }> {
+    const messages: object[] = [];
+    await this.dispatchCommand(seatIdx, cmd, (obj) => {
+      if ((obj as { type?: string }).type !== "view") messages.push(obj);
+    });
+    await this.driveBots();
+    return { messages, view: this.viewFor(seatIdx) };
+  }
+
+  /** The whole client API: three POST actions on the room URL.
+   *  join {name, token?} \u2192 seated + view (or error)
+   *  command {token, cmd} \u2192 direct replies + fresh view
+   *  poll {token, since} \u2192 {unchanged} at the same version, else
+   *  the fresh view. Polls are pure reads plus a presence touch:
+   *  the bot scheduler stays alarm-driven and is not poked here,
+   *  so a poll costs no storage writes. */
+  async onRequest(req: Request): Promise<Response> {
+    let body: {
+      action?: string;
+      name?: string;
+      token?: string;
+      cmd?: Command;
+      since?: number;
+    };
+    try {
+      body = (await req.json()) as typeof body;
+    } catch {
+      return Response.json(
+        { type: "error", error: "bad-request" },
+        { status: 400 }
+      );
     }
+    if (body.action === "join") {
+      const res = await this.joinSeat(body.name ?? "Player", body.token ?? "");
+      if ("error" in res) {
+        return Response.json({ type: "error", error: res.error });
+      }
+      return Response.json({
+        type: "seated",
+        seat: res.seat,
+        token: res.token,
+        view: this.viewFor(res.seat),
+      });
+    }
+    const seatIdx = this.seatByToken(body.token ?? "");
+    if (seatIdx < 0) {
+      return Response.json({ type: "error", error: "unknown-seat" });
+    }
+    this.touchPresence(seatIdx);
+    if (body.action === "command" && body.cmd) {
+      const { messages, view } = await this.runCommand(seatIdx, body.cmd);
+      return Response.json({ messages, view });
+    }
+    if (body.action === "poll") {
+      if (
+        typeof body.since === "number" &&
+        body.since === this.state.version
+      ) {
+        return Response.json({
+          type: "unchanged",
+          version: this.state.version,
+        });
+      }
+      return Response.json({ view: this.viewFor(seatIdx) });
+    }
+    return Response.json(
+      { type: "error", error: "bad-request" },
+      { status: 400 }
+    );
   }
 
   appendEvent(type: string, seat?: number, detail?: string) {
@@ -617,7 +696,6 @@ export class Mahjong extends Server<Env> {
     p.window = null;
     s.version++;
     await this.persist();
-    this.broadcastViews();
   }
 
   /** The alarm is shared: the escrow grace expiring (claims, if
@@ -631,28 +709,9 @@ export class Mahjong extends Server<Env> {
     await this.driveBots();
   }
 
-  async onMessage(conn: Conn, message: string | ArrayBuffer) {
-    let cmd: Command;
-    try {
-      cmd = JSON.parse(message as string) as Command;
-    } catch {
-      return;
-    }
-    // Liveness probe (client wake-up check): answered directly,
-    // never enters the command pipeline or the bot driver.
-    if ((cmd as { type?: string }).type === "ping") {
-      conn.send(JSON.stringify({ type: "pong" }));
-      return;
-    }
-    await this.dispatchCommand(this.seatOf(conn), cmd, (obj) =>
-      conn.send(JSON.stringify(obj))
-    );
-    await this.driveBots();
-  }
-
   /** One command through the full pipeline — idempotency, version
-   *  CAS, the dispatch itself, persistence and broadcast. Human
-   *  messages arrive via onMessage; bot commands are issued by the
+   *  CAS, the dispatch itself and persistence. Human commands
+   *  arrive via runCommand; bot commands are issued by the
    *  actor itself with a fresh id and the current version. `send`
    *  delivers this command's own replies (ack / rejected / stale /
    *  notes); for bots it is a no-op sink, since a bot reads the
@@ -698,6 +757,7 @@ export class Mahjong extends Server<Env> {
         token: `bot-${crypto.randomUUID()}`,
         connected: true,
         bot: true,
+        lastSeen: Date.now(),
       });
       this.appendEvent("add-bot", s.seats.length - 1, name);
       applied = true;
@@ -716,18 +776,12 @@ export class Mahjong extends Server<Env> {
         target &&
         (cmd.type === "removeBot"
           ? target.bot === true
-          : target.bot === true || target.connected === false);
+          : target.bot === true || !this.isPresent(target));
       if (removable) {
         const [gone] = s.seats.splice(cmd.seat, 1);
-        // Connections seated behind the removed seat shift down one
-        // index with the array; a connection somehow still holding
-        // the removed seat is unseated.
-        for (const conn of this.getConnections<ConnState>()) {
-          const cs = conn.state as ConnState | null;
-          if (cs && cs.seat === cmd.seat) conn.setState({ seat: -1 });
-          else if (cs && cs.seat > cmd.seat)
-            conn.setState({ seat: cs.seat - 1 });
-        }
+        // Seats are addressed by token on every request, so the
+        // seats behind the removed one simply shift down an index;
+        // the removed seat's token stops resolving at once.
         this.appendEvent("remove-seat", cmd.seat, gone.name);
         applied = true;
       }
@@ -1064,7 +1118,6 @@ export class Mahjong extends Server<Env> {
       }
       await this.persist();
       send({ type: "ack", id: cmd.id, version: s.version });
-      this.broadcastViews();
     } else {
       send({ type: "rejected", id: cmd.id, version: s.version });
     }
