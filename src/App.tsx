@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { tileLabel, type Tile } from "./tiles";
 import { TileSvg, TileBackSvg } from "./TileSvg";
 
@@ -789,7 +789,24 @@ export default function App() {
           )}
 
           {p.discards.length > 0 && (
-            <div className="discard-pool">
+            <div
+              className="discard-pool"
+              style={
+                {
+                  "--poolw": `${
+                    p.discards.length <= 20
+                      ? 31
+                      : p.discards.length <= 40
+                        ? 27
+                        : p.discards.length <= 64
+                          ? 23
+                          : p.discards.length <= 90
+                            ? 20
+                            : 18
+                  }px`,
+                } as CSSProperties
+              }
+            >
               <span className="pool-label">Discards:</span>
               {p.discards.map((t, i) => (
                 <span key={i} className="tile mini">
