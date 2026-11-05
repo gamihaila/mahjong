@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import PartySocket from "partysocket";
 import { tileLabel, type Tile } from "./tiles";
 import { TileSvg, TileBackSvg } from "./TileSvg";
 
@@ -124,7 +123,7 @@ export default function App() {
   const [name, setName] = useState(() => localStorage.getItem("mj-name") ?? "");
   const [joined, setJoined] = useState(false);
   const [view, setView] = useState<View | null>(null);
-  const [status, setStatus] = useState("Not connected");
+  const [status, setStatus] = useState("");
   const [idCounter] = useState(() => ({ n: 0 }));
 
   // Charleston pass composition: indices into the combined rack
@@ -137,7 +136,7 @@ export default function App() {
   // Play loop: the rack index selected to discard.
   const [discardIdx, setDiscardIdx] = useState<number | null>(null);
 
-  const socketRef = useRef<PartySocket | null>(null);
+  const tokenRef = useRef("");
   const viewRef = useRef<View | null>(null);
   viewRef.current = view;
 
@@ -166,99 +165,169 @@ export default function App() {
     p?.window?.escrowDeadline != null;
   const now = useNow(waiting, 500);
 
-  // Liveness probe: after the page wakes (unlock, tab switch back,
-  // network return), an apparently-open socket may be a zombie —
-  // iOS drops the connection while the app is backgrounded without
-  // delivering a close event. Probe it; no answer, force reconnect.
-  const probeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ---- transport: HTTP request/response + polling ----
+  // There is no socket. Every request carries the seat token and
+  // stands alone; a frozen, killed or reloaded page recovers with
+  // its next request. Commands POST and return the fresh view, so
+  // your own moves feel instant; other players' moves arrive on
+  // the poll clock, at an interval keyed to what you're waiting
+  // for (see pollDelayMs).
+  async function api(body: object): Promise<{
+    type?: string;
+    error?: string;
+    token?: string;
+    view?: View;
+    messages?: { type: string; note?: string }[];
+  }> {
+    const r = await fetch(`/parties/mahjong/${encodeURIComponent(room)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return r.json();
+  }
 
-  function pokeSocket() {
-    const socket = socketRef.current;
-    if (!socket) return;
-    if (socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
-      socket.reconnect();
-      return;
-    }
-    if (socket.readyState !== WebSocket.OPEN) return;
-    if (probeTimer.current) clearTimeout(probeTimer.current);
-    probeTimer.current = setTimeout(() => socket.reconnect(), 3500);
+  function handleSeatLoss() {
+    setJoined(false);
+    setView(null);
+    setStatus("Your seat was removed \u2014 rejoin to play.");
+  }
+
+  async function connect() {
+    localStorage.setItem("mj-name", name);
+    const tokenKey = `mj-token-${room}`;
     try {
-      socket.send(JSON.stringify({ type: "ping" }));
+      const res = await api({
+        action: "join",
+        name: name || "Player",
+        token: localStorage.getItem(tokenKey) ?? "",
+      });
+      if (res.type === "error" || !res.view) {
+        setStatus(`Couldn't join: ${res.error ?? "no response"}`);
+        return;
+      }
+      tokenRef.current = res.token ?? "";
+      if (res.token) localStorage.setItem(tokenKey, res.token);
+      setView(res.view);
+      setStatus("");
+      setJoined(true);
     } catch {
-      socket.reconnect();
+      setStatus("Couldn't reach the server \u2014 try again.");
     }
   }
 
+  async function send(type: string, extra: Record<string, unknown> = {}) {
+    const v = viewRef.current;
+    if (!v || !tokenRef.current) return;
+    idCounter.n += 1;
+    try {
+      const res = await api({
+        action: "command",
+        token: tokenRef.current,
+        cmd: {
+          id: `${Date.now()}-${idCounter.n}`,
+          baseVersion: v.version,
+          type,
+          ...extra,
+        },
+      });
+      if (res.type === "error") {
+        if (res.error === "unknown-seat") handleSeatLoss();
+        return;
+      }
+      for (const m of res.messages ?? []) {
+        if (m.type === "note" && m.note) setStatus(m.note);
+      }
+      if (res.view) setView(res.view);
+      setNetDown(false);
+    } catch {
+      setNetDown(true);
+    }
+  }
+
+  // How long to wait before the next poll, from the CURRENT view:
+  // poll while blocked on someone else; barely poll when the next
+  // change can only come from you (a slow safety beat covers a
+  // server redeploy, which is invisible in this transport anyway).
+  function pollDelayMs(v: View | null): number {
+    if (!v) return 2000;
+    if (v.phase === "lobby") return 2000;
+    if (v.phase === "over") return 3000;
+    if (v.phase === "charleston" && v.charleston) {
+      return v.charleston.submitted[v.you] ? 1500 : 10000;
+    }
+    if (v.phase === "playing" && v.play) {
+      const w = v.play.window;
+      if (w) {
+        const responded =
+          w.from === v.you ||
+          w.claims.some((cl) => cl.seat === v.you) ||
+          w.passed.includes(v.you);
+        return responded ? 1500 : 1000;
+      }
+      return v.play.turn === v.you ? 10000 : 2000;
+    }
+    return 3000;
+  }
+
+  const [netDown, setNetDown] = useState(false);
+  const pollNowRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    if (!joined) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      if (cancelled) return;
+      if (document.visibilityState === "visible" && tokenRef.current) {
+        try {
+          const res = await api({
+            action: "poll",
+            token: tokenRef.current,
+            since: viewRef.current?.version ?? -1,
+          });
+          if (res.type === "error") {
+            if (res.error === "unknown-seat") {
+              handleSeatLoss();
+              return;
+            }
+          } else if (res.view) {
+            setView(res.view);
+          }
+          setNetDown(false);
+        } catch {
+          setNetDown(true);
+        }
+      }
+      if (!cancelled) timer = setTimeout(tick, pollDelayMs(viewRef.current));
+    };
+    pollNowRef.current = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(tick, 0);
+    };
+    timer = setTimeout(tick, pollDelayMs(viewRef.current));
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joined]);
+
+  // Wake = poll immediately. One fetch is a full resync; there is
+  // nothing to probe and nothing to reconnect.
   useEffect(() => {
     const onWake = () => {
-      if (document.visibilityState === "visible") pokeSocket();
+      if (document.visibilityState === "visible") pollNowRef.current();
     };
     document.addEventListener("visibilitychange", onWake);
     window.addEventListener("pageshow", onWake);
-    window.addEventListener("online", pokeSocket);
+    window.addEventListener("online", onWake);
     return () => {
       document.removeEventListener("visibilitychange", onWake);
       window.removeEventListener("pageshow", onWake);
-      window.removeEventListener("online", pokeSocket);
-      if (probeTimer.current) clearTimeout(probeTimer.current);
+      window.removeEventListener("online", onWake);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  function connect() {
-    localStorage.setItem("mj-name", name);
-    const tokenKey = `mj-token-${room}`;
-    const socket = new PartySocket({
-      host: location.host,
-      party: "mahjong",
-      room,
-      // A query FUNCTION is re-evaluated on every reconnect attempt,
-      // so a reconnection always carries the CURRENT seat token —
-      // including one issued by the seated message moments earlier.
-      // (A static query froze the token from page load: reconnects
-      // after stepping away rejoined as strangers, or not at all.)
-      query: () => ({
-        name: name || "Player",
-        token: localStorage.getItem(tokenKey) ?? "",
-      }),
-    });
-    socketRef.current = socket;
-    socket.addEventListener("open", () => setStatus("Connected"));
-    socket.addEventListener("close", () =>
-      setStatus("Disconnected — reconnecting…")
-    );
-    socket.addEventListener("message", (e) => {
-      if (probeTimer.current) {
-        clearTimeout(probeTimer.current);
-        probeTimer.current = null;
-      }
-      const msg = JSON.parse(e.data as string);
-      if (msg.type === "seated") {
-        localStorage.setItem(tokenKey, msg.token);
-        setJoined(true);
-      } else if (msg.type === "note") {
-        setStatus(msg.note);
-      } else if (msg.type === "error") {
-        setStatus(`Couldn't join: ${msg.error}`);
-      } else if (msg.type === "view") {
-        setView(msg as View);
-      }
-    });
-  }
-
-  function send(type: string, extra: Record<string, unknown> = {}) {
-    const v = viewRef.current;
-    if (!v || !socketRef.current) return;
-    idCounter.n += 1;
-    socketRef.current.send(
-      JSON.stringify({
-        id: `${Date.now()}-${idCounter.n}`,
-        baseVersion: v.version,
-        type,
-        ...extra,
-      })
-    );
-  }
 
   if (!joined) {
     return (
@@ -355,6 +424,7 @@ export default function App() {
       <header>
         <h1>Mahjong — room “{room}”</h1>
         <p className="status">
+          {netDown ? "Connection hiccup \u2014 retrying\u2026 " : ""}
           {status} · you are seat {you} ({WINDS[you] ?? "?"})
           {view ? ` · wall: ${view.wallCount}` : ""} ·{" "}
           <a href="/card.html" target="_blank" rel="noreferrer">
