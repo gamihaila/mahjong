@@ -83,6 +83,23 @@ function useNow(active: boolean, ms = 500) {
   return now;
 }
 
+// The two countdown texts are leaf components with their OWN
+// ticker, so the 500ms beat re-renders a text node — not the
+// whole table. (The App-level ticker used to re-render every
+// tile on the screen twice a second while you composed a
+// Charleston pass, and a tap could queue behind that render:
+// the highlight lagged, intermittently, worst while selecting.)
+function EscrowCountdown({ deadline }: { deadline: number }) {
+  const now = useNow(true, 250);
+  const secs = Math.max(0, Math.ceil((deadline - now) / 1000));
+  return <> for {secs}s</>;
+}
+
+function StepAge({ startedAt }: { startedAt: number }) {
+  const now = useNow(true, 1000);
+  return <>Step started {ago(now - startedAt)} ago</>;
+}
+
 function ago(ms: number): string {
   const sec = Math.max(0, Math.floor(ms / 1000));
   if (sec < 5) return "just now";
@@ -160,11 +177,6 @@ export default function App() {
   }, [c?.yourPass, touched]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => setDiscardIdx(null), [view?.version]);
 
-  const waiting =
-    (view?.phase === "charleston" && !!c && !c.submitted[you]) ||
-    p?.window?.escrowDeadline != null;
-  const now = useNow(waiting, 500);
-
   // ---- transport: HTTP request/response + polling ----
   // There is no socket. Every request carries the seat token and
   // stands alone; a frozen, killed or reloaded page recovers with
@@ -179,12 +191,23 @@ export default function App() {
     view?: View;
     messages?: { type: string; note?: string }[];
   }> {
-    const r = await fetch(`/parties/mahjong/${encodeURIComponent(room)}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    return r.json();
+    const attempt = async (): Promise<any> => {
+      const r = await fetch(`/parties/mahjong/${encodeURIComponent(room)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      return r.json();
+    };
+    try {
+      return await attempt();
+    } catch {
+      // One retry on a transport failure. Safe for every action:
+      // commands carry idempotency ids (a landed command acks as a
+      // duplicate), join is keyed by the proposed token, polls are
+      // pure reads.
+      return attempt();
+    }
   }
 
   function handleSeatLoss() {
@@ -193,14 +216,30 @@ export default function App() {
     setStatus("Your seat was removed \u2014 rejoin to play.");
   }
 
+  // Views are applied monotonically: a poll and a command can be
+  // in flight together, and the older response must never land
+  // after the fresher one and regress the screen — selections are
+  // indices into the view's tile arrays, so a regressed view can
+  // silently re-point a chosen tile.
+  const applyView = (next: View) =>
+    setView((prev) => (prev && next.version < prev.version ? prev : next));
+
   async function connect() {
     localStorage.setItem("mj-name", name);
     const tokenKey = `mj-token-${room}`;
+    // Persist the proposed token BEFORE the first join: a join
+    // whose response is lost (or a double-tapped button) retries
+    // with the same proposal and lands in the same seat.
+    let proposed = localStorage.getItem(tokenKey) ?? "";
+    if (!proposed) {
+      proposed = crypto.randomUUID();
+      localStorage.setItem(tokenKey, proposed);
+    }
     try {
       const res = await api({
         action: "join",
         name: name || "Player",
-        token: localStorage.getItem(tokenKey) ?? "",
+        token: proposed,
       });
       if (res.type === "error" || !res.view) {
         setStatus(`Couldn't join: ${res.error ?? "no response"}`);
@@ -208,7 +247,7 @@ export default function App() {
       }
       tokenRef.current = res.token ?? "";
       if (res.token) localStorage.setItem(tokenKey, res.token);
-      setView(res.view);
+      applyView(res.view);
       setStatus("");
       setJoined(true);
     } catch {
@@ -238,7 +277,7 @@ export default function App() {
       for (const m of res.messages ?? []) {
         if (m.type === "note" && m.note) setStatus(m.note);
       }
-      if (res.view) setView(res.view);
+      if (res.view) applyView(res.view);
       setNetDown(false);
     } catch {
       setNetDown(true);
@@ -265,7 +304,7 @@ export default function App() {
           w.passed.includes(v.you);
         return responded ? 1500 : 1000;
       }
-      return v.play.turn === v.you ? 10000 : 2000;
+      return v.play.turn === v.you ? 10000 : 750;
     }
     return 3000;
   }
@@ -277,33 +316,57 @@ export default function App() {
     if (!joined) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Single-flight: exactly one chain, ever. A wake that lands
+    // while a fetch is in flight folds into `again` instead of
+    // starting a rival loop (the naive version leaks a loop per
+    // wake — each reschedule overwrote the pending timer handle
+    // without clearing it).
+    let running = false;
+    let again = false;
     const tick = async () => {
-      if (cancelled) return;
-      if (document.visibilityState === "visible" && tokenRef.current) {
-        try {
-          const res = await api({
-            action: "poll",
-            token: tokenRef.current,
-            since: viewRef.current?.version ?? -1,
-          });
-          if (res.type === "error") {
-            if (res.error === "unknown-seat") {
-              handleSeatLoss();
-              return;
-            }
-          } else if (res.view) {
-            setView(res.view);
-          }
-          setNetDown(false);
-        } catch {
-          setNetDown(true);
-        }
+      if (cancelled || running) {
+        again = true;
+        return;
       }
-      if (!cancelled) timer = setTimeout(tick, pollDelayMs(viewRef.current));
+      running = true;
+      try {
+        if (document.visibilityState === "visible" && tokenRef.current) {
+          try {
+            const cur = viewRef.current;
+            const res = await api({
+              action: "poll",
+            token: tokenRef.current,
+              since: cur?.version ?? -1,
+              sig: cur
+                ? cur.seats.map((s) => (s.connected ? "1" : "0")).join("")
+                : "",
+            });
+            if (res.type === "error") {
+              if (res.error === "unknown-seat") {
+                handleSeatLoss();
+                return;
+              }
+            } else if (res.view) {
+              applyView(res.view);
+            }
+            setNetDown(false);
+          } catch {
+            setNetDown(true);
+          }
+        }
+      } finally {
+        running = false;
+      }
+      if (!cancelled) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(tick, again ? 0 : pollDelayMs(viewRef.current));
+        again = false;
+      }
     };
     pollNowRef.current = () => {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(tick, 0);
+      if (running) again = true;
+      else timer = setTimeout(tick, 0);
     };
     timer = setTimeout(tick, pollDelayMs(viewRef.current));
     return () => {
@@ -413,11 +476,6 @@ export default function App() {
       })
     );
   }
-
-  const escrowSecs =
-    w?.escrowDeadline != null
-      ? Math.max(0, Math.ceil((w.escrowDeadline - now) / 1000))
-      : null;
 
   return (
     <div className="app">
@@ -548,7 +606,7 @@ export default function App() {
             {isBlindStep ? " (blind pass allowed)" : ""}
           </h2>
           <p className="waiting">
-            Step started {ago(now - c.stepStartedAt)} ago ·{" "}
+            <StepAge startedAt={c.stepStartedAt} /> ·{" "}
             {c.submitted.filter(Boolean).length} of {view.seats.length} passes
             in
           </p>
@@ -610,8 +668,12 @@ export default function App() {
                 {w.escrowSeat !== null ? (
                   <p>
                     {view.seats[w.escrowSeat]?.name} drew a tile — hidden
-                    {escrowSecs !== null ? ` for ${escrowSecs}s` : ""} while
-                    claims can preempt it.
+                    {w.escrowDeadline != null ? (
+                      <EscrowCountdown deadline={w.escrowDeadline} />
+                    ) : (
+                      ""
+                    )}{" "}
+                    while claims can preempt it.
                     {w.youEscrowed ? " It's yours if nobody claims." : ""}
                   </p>
                 ) : (
