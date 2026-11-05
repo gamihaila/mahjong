@@ -77,7 +77,13 @@ button.quiet {
 }
 .join label { display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
 .join input {
-  font: inherit;
+  /* 16px, explicitly: the label around the input is 14px and
+     font: inherit would take that — and iOS Safari auto-zooms
+     the page when a focused input's text is under 16px, then
+     never zooms back. The zoom (16/14 = 1.14x) leaves the whole
+     board magnified with its right side cut off until a pinch
+     resets it. At 16px the zoom never triggers. */
+  font-size: 16px;
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid #d6cba3;
