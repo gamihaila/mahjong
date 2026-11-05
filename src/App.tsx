@@ -213,6 +213,11 @@ export default function App() {
     return (
       <div className="app">
         <h1>Mahjong</h1>
+        <p>
+          <a href="/card.html" target="_blank" rel="noreferrer">
+            2026 card reference ↗
+          </a>
+        </p>
         <div className="join">
           <label>
             Room
@@ -295,7 +300,10 @@ export default function App() {
         <h1>Mahjong — room “{room}”</h1>
         <p className="status">
           {status} · you are seat {you} ({WINDS[you] ?? "?"})
-          {view ? ` · wall: ${view.wallCount}` : ""}
+          {view ? ` · wall: ${view.wallCount}` : ""} ·{" "}
+          <a href="/card.html" target="_blank" rel="noreferrer">
+            2026 card ↗
+          </a>
         </p>
         <button className="quiet" onClick={() => send("reset")}>
           Reset room
