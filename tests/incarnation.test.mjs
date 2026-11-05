@@ -212,6 +212,32 @@ check(
   `step=${roomB2.state.charleston?.step}`
 );
 
+// ---------- Part 3: join idempotency ----------
+// A join whose response is lost is retried with the same client-
+// proposed token and must land in the SAME seat (PR #27 review):
+// no orphan seats from lost responses or double-taps.
+const storage3 = makeStorage();
+const roomC = new Mahjong(makeCtx(storage3), {});
+await roomC.onStart();
+const join1 = await roomC.joinSeat("Proposer", "proposed-token-abcdef-1234");
+const join2 = await roomC.joinSeat("Proposer", "proposed-token-abcdef-1234");
+check(
+  "C: a well-formed proposed token is adopted",
+  join1.token === "proposed-token-abcdef-1234",
+  `got ${join1.token}`
+);
+check(
+  "C: rejoining with it reclaims the same seat, no orphan",
+  join2.seat === join1.seat && roomC.state.seats.length === 1,
+  `seats=${roomC.state.seats.length}`
+);
+const join3 = await roomC.joinSeat("Other", "x");
+check(
+  "C: a malformed proposal is replaced, not adopted",
+  join3.token !== "x" && join3.seat === 1,
+  `got ${join3.token}`
+);
+
 console.log(
   `\n${checks - failures}/${checks} checks passed${failures ? `, ${failures} FAILED` : ""}`
 );
