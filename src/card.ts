@@ -23,14 +23,13 @@ import type { Tile } from "./tiles";
 // one pattern group; the remaining groups are filled from the rack,
 // where jokers may substitute only inside a group of 3+ IDENTICAL
 // tiles (a pung, kong, quint or sextet — never a pair, a single, a
-// run, or a mixed group like 2026). A concealed (C) hand admits no
-// melds. This is the NMJL rule set as printed on the card.
+// run, or a mixed group like 2026). The card data carries tiles
+// and suits only — the public guide publishes no points and no
+// concealed marks — so matching ignores both by design.
 
 export interface CardHand {
   index: number;
   section: string;
-  concealed: boolean;
-  points: number;
   groups: { color: string; token: string }[];
   note: string;
   display: string; // the groups as printed, colors stripped
@@ -38,9 +37,7 @@ export interface CardHand {
 
 export interface WinInfo {
   section: string;
-  points: number;
   display: string;
-  concealed: boolean;
 }
 
 interface MeldLike {
@@ -58,19 +55,17 @@ export function parseCard(text: string): CardHand[] {
       section = trimmed.slice(3).trim();
       continue;
     }
-    const m = trimmed.match(/^([XC])(\d+)\s+(.+?)\s*::\s*(.*)$/);
+    const m = trimmed.match(/^(.+?)\s*::\s*(.*)$/);
     if (!m) continue;
-    const groups = m[3]
+    const groups = m[1]
       .trim()
       .split(/\s+/)
       .map((g) => ({ color: g[0], token: g.slice(1) }));
     hands.push({
       index: hands.length,
       section,
-      concealed: m[1] === "C",
-      points: Number(m[2]),
       groups,
-      note: m[4],
+      note: m[2],
       display: groups.map((g) => g.token).join(" "),
     });
   }
@@ -349,7 +344,6 @@ export function handMatches(
   rackTiles: Tile[],
   melds: MeldLike[]
 ): boolean {
-  if (hand.concealed && melds.length > 0) return false;
   const slotCount = slotMap(hand).size;
   const assignments = permutations(SUITS, slotCount);
   for (const candidate of rankCandidates(hand)) {
@@ -362,25 +356,18 @@ export function handMatches(
   return false;
 }
 
-/** The best (highest-point) hand a position completes, if any. */
+/** The first hand in card order that a position completes, if any. */
 export function findWin(
   card: CardHand[],
   rackTiles: Tile[],
   melds: MeldLike[]
 ): WinInfo | null {
-  let best: CardHand | null = null;
   for (const hand of card) {
-    if (best && hand.points <= best.points) continue;
-    if (handMatches(hand, rackTiles, melds)) best = hand;
+    if (handMatches(hand, rackTiles, melds)) {
+      return { section: hand.section, display: hand.display };
+    }
   }
-  return best
-    ? {
-        section: best.section,
-        points: best.points,
-        display: best.display,
-        concealed: best.concealed,
-      }
-    : null;
+  return null;
 }
 
 // ---------- evaluation (for the bots) ----------
@@ -400,14 +387,12 @@ export interface HandEval {
  *  readings exactly (same candidates, same meld rule, same joker
  *  rule), but where the matcher asks "filled or not", this counts
  *  the shortfall group by group. Returns null when the hand is
- *  unreachable from here (a meld fits no group, or the hand is
- *  concealed and melds exist). */
+ *  unreachable from here (a meld fits no group). */
 export function evaluateHand(
   hand: CardHand,
   rackTiles: Tile[],
   melds: MeldLike[]
 ): HandEval | null {
-  if (hand.concealed && melds.length > 0) return null;
   const slotCount = slotMap(hand).size;
   const assignments = permutations(SUITS, slotCount);
   let best: HandEval | null = null;
@@ -467,7 +452,7 @@ export function evaluateHand(
 }
 
 /** The k closest hands to this position, nearest first. Ties break
- *  toward the hand that keeps more of the rack, then more points. */
+ *  toward the hand that keeps more of the rack. */
 export function bestHands(
   card: CardHand[],
   rackTiles: Tile[],
@@ -480,10 +465,7 @@ export function bestHands(
     if (e) evals.push(e);
   }
   evals.sort(
-    (a, b) =>
-      a.missing - b.missing ||
-      b.keep.length - a.keep.length ||
-      b.hand.points - a.hand.points
+    (a, b) => a.missing - b.missing || b.keep.length - a.keep.length
   );
   return evals.slice(0, k);
 }
