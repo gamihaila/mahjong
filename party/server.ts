@@ -60,7 +60,6 @@ type Phase = "lobby" | "charleston" | "playing" | "over";
 interface Seat {
   name: string;
   token: string;
-  connected: boolean;
   bot: boolean;
   /** Last request heard from this seat (ms epoch). Presence is
    *  derived from it — see isPresent — rather than tracked by a
@@ -390,8 +389,16 @@ export class Mahjong extends Server<Env> {
    *  It also feeds game rules: a seat absent past this window is
    *  one whose exposed jokers may be exchanged with and whose
    *  lobby seat may be removed. */
-  isPresent(seat: Seat): boolean {
-    return seat.bot || Date.now() - (seat.lastSeen ?? 0) < 15000;
+  isPresent(seat: Seat, windowMs = 15000): boolean {
+    return seat.bot || Date.now() - (seat.lastSeen ?? 0) < windowMs;
+  }
+
+  /** A cheap fingerprint of who is currently present, folded into
+   *  the poll cursor: going absent bumps no version, so without it
+   *  other clients' polls would answer "unchanged" forever and the
+   *  presence badge would never flip until a game event landed. */
+  presenceSig(): string {
+    return this.state.seats.map((s) => (this.isPresent(s) ? "1" : "0")).join("");
   }
 
   seatByToken(token: string): number {
@@ -403,7 +410,6 @@ export class Mahjong extends Server<Env> {
     const seat = this.state.seats[seatIdx];
     if (seat) {
       seat.lastSeen = Date.now();
-      seat.connected = true;
     }
   }
 
@@ -415,6 +421,7 @@ export class Mahjong extends Server<Env> {
     token: string
   ): Promise<{ seat: number; token: string } | { error: string }> {
     const s = this.state;
+    const cleanName = (name || "Player").slice(0, 24);
     let seatIdx = s.seats.findIndex(
       (seat) => token !== "" && seat.token === token
     );
@@ -431,15 +438,20 @@ export class Mahjong extends Server<Env> {
     }
     if (s.seats.length >= MAX_SEATS) return { error: "room-full" };
     seatIdx = s.seats.length;
-    const fresh = crypto.randomUUID();
+    // Adopt the client's proposed token when it is well-formed:
+    // the client persists it BEFORE the first join, so a join
+    // whose response is lost (or a double-tapped button) retries
+    // into the SAME seat instead of minting an orphan.
+    const fresh = /^[A-Za-z0-9-]{16,64}$/.test(token)
+      ? token
+      : crypto.randomUUID();
     s.seats.push({
-      name: name || "Player",
+      name: cleanName,
       token: fresh,
-      connected: true,
       bot: false,
       lastSeen: Date.now(),
     });
-    this.appendEvent("join", seatIdx, name || "Player");
+    this.appendEvent("join", seatIdx, cleanName);
     s.version++;
     await this.persist();
     return { seat: seatIdx, token: fresh };
@@ -476,6 +488,7 @@ export class Mahjong extends Server<Env> {
       token?: string;
       cmd?: Command;
       since?: number;
+      sig?: string;
     };
     try {
       body = (await req.json()) as typeof body;
@@ -509,7 +522,8 @@ export class Mahjong extends Server<Env> {
     if (body.action === "poll") {
       if (
         typeof body.since === "number" &&
-        body.since === this.state.version
+        body.since === this.state.version &&
+        (body.sig === undefined || body.sig === this.presenceSig())
       ) {
         return Response.json({
           type: "unchanged",
@@ -755,8 +769,7 @@ export class Mahjong extends Server<Env> {
       s.seats.push({
         name,
         token: `bot-${crypto.randomUUID()}`,
-        connected: true,
-        bot: true,
+          bot: true,
         lastSeen: Date.now(),
       });
       this.appendEvent("add-bot", s.seats.length - 1, name);
@@ -776,7 +789,7 @@ export class Mahjong extends Server<Env> {
         target &&
         (cmd.type === "removeBot"
           ? target.bot === true
-          : target.bot === true || !this.isPresent(target));
+          : target.bot === true || !this.isPresent(target, 60000));
       if (removable) {
         const [gone] = s.seats.splice(cmd.seat, 1);
         // Seats are addressed by token on every request, so the
