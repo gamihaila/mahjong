@@ -120,3 +120,32 @@ account. Every design decision above is unchanged; only the packaging
 differs (wrangler.jsonc instead of partykit.json, the `partyserver`
 package, storage via the object's own ctx.storage). Read "PartyKit" in
 the text above as "PartyServer" from here on.
+
+## Transport note (2026-11-05)
+
+The WebSocket transport was replaced with plain HTTP request/response
+plus client polling. Mobile browsers freeze, starve, and sometimes
+discard backgrounded pages wholesale, so any design that keeps
+connection state in the page eventually strands the player at a
+"Disconnected" screen with a manual reload as the only recovery — we
+hit exactly that, intermittently and irreproducibly (PR #26 hardened
+the socket and treated the symptoms). The game has no real-time
+budget to protect — its fastest clock, the 2.5 s escrow grace, runs
+server-side — so push notification was buying latency the game does
+not need at the price of a failure class it cannot afford.
+
+The protocol was already request/response-shaped (commands with
+base-version CAS and idempotency IDs up, versioned redacted views
+down); only the delivery changed. Three POST actions on the room URL:
+`join` (token reclaims a seat), `command` (the response carries the
+requester's fresh view, so your own moves stay instant), and `poll`
+(since-version → unchanged, or the fresh view). The client polls
+while it is blocked on someone else — fast (~1 s) inside a claim
+window, 1.5–3 s otherwise — and barely at all (~10 s safety beat)
+when the next change can only come from itself. Every request is
+self-contained, so a frozen, killed, or reloaded page recovers with
+its next request; presence is derived from last-seen timestamps
+rather than connection state, which is also more honest. The room
+object is no longer a connection manager at all — it answers
+commands and view requests, and bots and timers stay alarm-driven
+inside it exactly as before.
