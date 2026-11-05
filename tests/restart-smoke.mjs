@@ -1,8 +1,9 @@
 // Restart smoke test: a room must survive the server PROCESS
 // being killed and restarted mid-Charleston — state (seats,
-// tokens, racks, the barrier) is persisted, the human reclaims
-// their seat by token, and play continues. This guards the
-// persistence/rejoin seam end to end through the real stack.
+// tokens, racks, the barrier) is persisted, the human rejoins
+// with their token and reclaims their seat, and play continues.
+// This guards the persistence/rejoin seam end to end through the
+// real stack, over the same HTTP transport the browser uses.
 // It does NOT reproduce production's hibernation timing (the
 // dev server keeps one object incarnation per process); the
 // incarnation boundary itself is covered, deterministically,
@@ -13,9 +14,10 @@
 import { spawn } from "node:child_process";
 
 const PORT = 8899;
-const BASE = `ws://127.0.0.1:${PORT}/parties/mahjong`;
-const ROOM = "restart-smoke";
-const TOKEN = "restart-smoke-token";
+// A unique room per run: wrangler dev persists DO storage across
+// runs, and a fixed room name collides with the last run's
+// mid-Charleston leftovers (a fresh join is refused mid-hand).
+const ROOM_URL = `http://127.0.0.1:${PORT}/parties/mahjong/restart-smoke-${Date.now()}`;
 let failures = 0;
 function check(name, cond) {
   if (cond) console.log(`  ok - ${name}`);
@@ -55,48 +57,61 @@ function stopServer(child) {
   }
 }
 
-let idSeq = 0;
-function connect(name) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`${BASE}/${ROOM}?name=${name}&token=${TOKEN}`);
-    const client = { ws, view: null, seat: -1, pending: new Map() };
-    ws.addEventListener("message", (e) => {
-      const msg = JSON.parse(e.data);
-      if (msg.type === "seated") {
-        client.seat = msg.seat;
-        resolve(client);
-      } else if (msg.type === "view") client.view = msg;
-      else if (msg.id && client.pending.has(msg.id)) {
-        client.pending.get(msg.id)(msg.type);
-        client.pending.delete(msg.id);
-      }
-    });
-    ws.addEventListener("error", reject);
+async function api(body) {
+  const r = await fetch(ROOM_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
   });
+  return r.json();
+}
+
+// A minimal polling client, shaped like the browser's: join once,
+// then commands (whose responses carry the fresh view) and polls
+// by version.
+let idSeq = 0;
+async function join(name, savedToken = "") {
+  const res = await api({ action: "join", name, token: savedToken });
+  if (res.type === "error") throw new Error(`join failed: ${res.error}`);
+  return { seat: res.seat, token: res.token, view: res.view };
 }
 async function cmd(client, type, extra = {}) {
   for (let attempt = 0; attempt < 12; attempt++) {
-    const id = `s${++idSeq}`;
-    const result = await new Promise((res) => {
-      client.pending.set(id, res);
-      client.ws.send(
-        JSON.stringify({ id, baseVersion: client.view?.version ?? 0, type, ...extra })
-      );
-      setTimeout(() => res("timeout"), 4000);
+    const res = await api({
+      action: "command",
+      token: client.token,
+      cmd: {
+        id: `s${++idSeq}`,
+        baseVersion: client.view?.version ?? 0,
+        type,
+        ...extra,
+      },
     });
-    if (result === "ack") return true;
-    if (result === "rejected") return false;
-    await sleep(60);
+    if (res.view) client.view = res.view;
+    const kinds = (res.messages ?? []).map((m) => m.type);
+    if (kinds.includes("ack")) return true;
+    if (kinds.includes("rejected")) return false;
+    await sleep(60); // stale base version: sync from the response and retry
   }
   return false;
 }
-async function waitFor(fn, timeout = 30000) {
+async function poll(client) {
+  const res = await api({
+    action: "poll",
+    token: client.token,
+    since: client.view?.version ?? -1,
+  });
+  if (res.view) client.view = res.view;
+}
+// Wait for a condition while polling like a real client would.
+async function waitFor(client, fn, timeout = 30000) {
   const t0 = Date.now();
   while (Date.now() - t0 < timeout) {
     if (fn()) return true;
-    await sleep(90);
+    await poll(client);
+    await sleep(150);
   }
-  return false;
+  return fn();
 }
 
 // Phase A: fill the table, deal, everyone passes step 1.
@@ -105,29 +120,30 @@ if (!(await waitUp())) {
   console.log("server did not come up");
   process.exit(1);
 }
-const a = await connect("Host");
+const a = await join("Host");
 await cmd(a, "addBot");
 await cmd(a, "addBot");
 await cmd(a, "addBot");
 await cmd(a, "start");
-await waitFor(() => a.view?.phase === "charleston");
+await waitFor(a, () => a.view?.phase === "charleston");
 await cmd(a, "pass", { tiles: a.view.yourTiles.slice(0, 3), blind: 0 });
 check(
   "phase A: bots pass step 1 and the step advances",
-  await waitFor(() => a.view?.charleston?.step === 1)
+  await waitFor(a, () => a.view?.charleston?.step === 1)
 );
-a.ws.close();
+const savedToken = a.token;
 stopServer(server);
 await sleep(1500);
 
-// Phase B: fresh process, same persisted state.
+// Phase B: fresh process, same persisted state. Rejoining with
+// the token reclaims the seat — the polling model's whole story.
 server = startServer();
 if (!(await waitUp())) {
   console.log("server did not come back up");
   process.exit(1);
 }
-const b = await connect("Host");
-await waitFor(() => b.view?.phase === "charleston");
+const b = await join("Host", savedToken);
+await waitFor(b, () => b.view?.phase === "charleston");
 check("phase B: seat reclaimed by token", b.seat === 0);
 check(
   "phase B: room still mid-charleston at step 2",
@@ -136,9 +152,8 @@ check(
 await cmd(b, "pass", { tiles: b.view.yourTiles.slice(0, 3), blind: 0 });
 check(
   "phase B: bots pass step 2 after the restart",
-  await waitFor(() => b.view?.charleston?.step === 2)
+  await waitFor(b, () => b.view?.charleston?.step === 2)
 );
-b.ws.close();
 stopServer(server);
 console.log(failures ? `\n${failures} FAILED` : "\nrestart smoke passed");
 process.exit(failures ? 1 : 0);
