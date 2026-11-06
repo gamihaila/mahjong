@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { CARD_2026, bestHands, type CardHand, type HandEval } from "./card";
 import { buildWall, shuffle, sortTiles, tileLabel, type Tile } from "./tiles";
 import { TileSvg, TileBackSvg } from "./TileSvg";
@@ -547,10 +547,253 @@ function TargetsDrill() {
   );
 }
 
+
+// ---------- drag-and-drop prototype ----------
+
+// A lab for the interaction the live rack does not have yet:
+// press a tile and drag it where you want it, with real pointer
+// events (mouse and touch alike — HTML5 drag events barely exist
+// on touch screens). Nothing here touches the game or the other
+// drills; it exists so the feel can be judged on a real phone
+// before anyone commits to building it into the rack.
+
+interface DragTile {
+  id: string;
+  tile: Tile;
+}
+
+interface DragRect {
+  top: number;
+  bottom: number;
+  left: number;
+  width: number;
+}
+
+/** Where a dragged tile would land among the tiles it hovers
+ *  over: before the first tile whose row starts below the
+ *  pointer, or whose left half the pointer is in; after all of
+ *  them if it matches none. Rects are in display order with the
+ *  dragged tile excluded. */
+function insertionIndex(rects: DragRect[], x: number, y: number): number {
+  for (let i = 0; i < rects.length; i++) {
+    const r = rects[i];
+    if (
+      y < r.top ||
+      (y >= r.top && y <= r.bottom && x < r.left + r.width / 2)
+    )
+      return i;
+  }
+  return rects.length;
+}
+
+/** Remove the item at `from` and reinsert it at `insert`, an
+ *  index into the array with the item already removed. */
+function moveItem<T>(arr: T[], from: number, insert: number): T[] {
+  if (from < 0 || from >= arr.length) return arr;
+  const next = [...arr];
+  const [it] = next.splice(from, 1);
+  const to = Math.max(0, Math.min(insert, next.length));
+  if (to === from) return arr;
+  next.splice(to, 0, it);
+  return next;
+}
+
+function withIds(tiles: Tile[]): DragTile[] {
+  const seen = new Map<Tile, number>();
+  return tiles.map((tile) => {
+    const n = seen.get(tile) ?? 0;
+    seen.set(tile, n + 1);
+    return { id: `${tile}-${n}`, tile };
+  });
+}
+
+function sampleDragTiles(): DragTile[] {
+  const wall = shuffle(buildWall());
+  return withIds(sortTiles(wall.slice(0, 14)));
+}
+
+interface DragState {
+  id: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  x: number;
+  y: number;
+  offsetX: number;
+  offsetY: number;
+  width: number;
+  height: number;
+  active: boolean;
+}
+
+function DragPrototype() {
+  const [items, setItems] = useState<DragTile[]>(() => sampleDragTiles());
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const [moves, setMoves] = useState(0);
+  const rackRef = useRef<HTMLDivElement | null>(null);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const dragRef = useRef<DragState | null>(null);
+
+  const dragItem = drag ? (items.find((it) => it.id === drag.id) ?? null) : null;
+
+  function reorderAt(x: number, y: number, id: string) {
+    const rack = rackRef.current;
+    if (!rack) return;
+    const rects: DragRect[] = [];
+    rack.querySelectorAll<HTMLElement>("[data-drag-id]").forEach((el) => {
+      if (el.dataset.dragId === id) return;
+      const r = el.getBoundingClientRect();
+      rects.push({ top: r.top, bottom: r.bottom, left: r.left, width: r.width });
+    });
+    const insert = insertionIndex(rects, x, y);
+    const prev = itemsRef.current;
+    const next = moveItem(prev, prev.findIndex((it) => it.id === id), insert);
+    if (next !== prev) {
+      itemsRef.current = next;
+      setItems(next);
+      setMoves((m) => m + 1);
+    }
+  }
+
+  function onPointerDown(
+    e: ReactPointerEvent<HTMLButtonElement>,
+    item: DragTile
+  ) {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    dragRef.current = {
+      id: item.id,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      x: e.clientX,
+      y: e.clientY,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+      width: rect.width,
+      height: rect.height,
+      active: false,
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+
+  function onPointerMove(
+    e: ReactPointerEvent<HTMLButtonElement>,
+    item: DragTile
+  ) {
+    const s = dragRef.current;
+    if (!s || s.id !== item.id || s.pointerId !== e.pointerId) return;
+    if (
+      !s.active &&
+      Math.hypot(e.clientX - s.startX, e.clientY - s.startY) < 6
+    )
+      return;
+    const next = { ...s, x: e.clientX, y: e.clientY, active: true };
+    dragRef.current = next;
+    setDrag(next);
+    reorderAt(e.clientX, e.clientY, item.id);
+  }
+
+  function onPointerEnd(
+    e: ReactPointerEvent<HTMLButtonElement>,
+    item: DragTile
+  ) {
+    const s = dragRef.current;
+    if (!s || s.id !== item.id || s.pointerId !== e.pointerId) return;
+    dragRef.current = null;
+    setDrag(null);
+  }
+
+  function newRack() {
+    dragRef.current = null;
+    setDrag(null);
+    setMoves(0);
+    setItems(sampleDragTiles());
+  }
+
+  function sortRack() {
+    setItems((prev) => withIds(sortTiles(prev.map((it) => it.tile))));
+  }
+
+  return (
+    <div>
+      <section className="panel">
+        <h2>Drag lab</h2>
+        <p>
+          A prototype, kept away from the real game: press a tile
+          and drag it where you want it — mouse or finger. The
+          other tiles make room as you go. While you hold a tile it
+          owns the gesture, so the page won't scroll from the rack;
+          scroll from the panel edges instead.
+        </p>
+        <div className="row">
+          <button onClick={newRack}>New rack</button>
+          <button className="quiet" onClick={sortRack}>
+            Sort
+          </button>
+          <span className="count">
+            {moves} move{moves === 1 ? "" : "s"}
+          </span>
+        </div>
+      </section>
+      <section className="rack">
+        <h2>Prototype rack</h2>
+        <div className="tiles" ref={rackRef}>
+          {items.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="tile"
+              data-drag-id={item.id}
+              aria-label={`Drag ${tileLabel(item.tile)}`}
+              style={{
+                touchAction: "none",
+                cursor: "grab",
+                opacity: drag?.id === item.id ? 0.3 : 1,
+              }}
+              onPointerDown={(e) => onPointerDown(e, item)}
+              onPointerMove={(e) => onPointerMove(e, item)}
+              onPointerUp={(e) => onPointerEnd(e, item)}
+              onPointerCancel={(e) => onPointerEnd(e, item)}
+            >
+              <TileSvg tile={item.tile} />
+            </button>
+          ))}
+        </div>
+        <p className="hint">
+          Order: {items.map((it) => tileLabel(it.tile)).join(" · ")}
+        </p>
+      </section>
+      {drag?.active && dragItem && (
+        <div
+          aria-hidden
+          className="tile"
+          style={{
+            position: "fixed",
+            left: drag.x - drag.offsetX,
+            top: drag.y - drag.offsetY,
+            width: drag.width,
+            height: drag.height,
+            boxSizing: "border-box",
+            pointerEvents: "none",
+            zIndex: 60,
+            opacity: 0.95,
+          }}
+        >
+          <TileSvg tile={dragItem.tile} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- the room ----------
 
 export default function Drills({ onExit }: { onExit: () => void }) {
-  const [tab, setTab] = useState<"charleston" | "targets">("charleston");
+  const [tab, setTab] = useState<"charleston" | "targets" | "drag">(
+    "charleston"
+  );
   return (
     <div>
       <header>
@@ -576,11 +819,19 @@ export default function Drills({ onExit }: { onExit: () => void }) {
         >
           Name the hand
         </button>
+        <button
+          className={tab === "drag" ? "on" : ""}
+          onClick={() => setTab("drag")}
+        >
+          Drag lab
+        </button>
       </div>
       {tab === "charleston" ? (
         <CharlestonDrill key="c" />
-      ) : (
+      ) : tab === "targets" ? (
         <TargetsDrill key="t" />
+      ) : (
+        <DragPrototype key="d" />
       )}
     </div>
   );
