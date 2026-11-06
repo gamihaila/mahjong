@@ -231,3 +231,20 @@ kind is removed everywhere; a chow claim from an old client now
 composes no tiles and is rejected like any other illegal claim.
 Rooms already holding an exposed chow keep it (history is
 history) — it just can never happen again.
+
+## Rack arrangement is client-side (2026-11-06)
+
+Players arrange their own rack the way they would at a table:
+reorder the tiles, leave spaces between groups. That order is
+presentation, never game state. The client keeps a preference
+list (tile instances plus gap markers) in localStorage per
+room and matches it against each fresh view by tile identity —
+tiles of a kind are fungible, so the match is by count; tiles
+that leave drop out, tiles that arrive append. Nothing about
+the arrangement is sent to the server, enters the event log,
+or appears in a replay, and all selection state keeps speaking
+in the server's own rack indices: display entries carry their
+server index back to the click handlers. Arranging happens in
+an explicit mode (tap a tile to pick it up, move it, give it a
+space before it) so an arranging tap can never discard a tile
+or compose a pass by accident.
