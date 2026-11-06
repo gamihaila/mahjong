@@ -92,18 +92,18 @@ interface CharlestonState {
   voidAgree: boolean[]; // per seat; the proposer counts as agreeing
 }
 
-type ClaimKind = "pung" | "kong" | "chow" | "mahjong";
+type ClaimKind = "pung" | "kong" | "mahjong";
 
 interface Claim {
   seat: number;
   kind: ClaimKind;
-  /** Tiles the claimant commits from their rack (partners for a chow,
-   *  the set-aside tiles for a pung or kong), fixed at claim time. */
+  /** Tiles the claimant commits from their rack (the set-aside
+   *  tiles for a pung or kong), fixed at claim time. */
   tiles: Tile[];
 }
 
 interface Meld {
-  kind: "pung" | "kong" | "chow";
+  kind: "pung" | "kong";
   tiles: Tile[]; // exposed, public; includes the claimed discard
 }
 
@@ -288,16 +288,6 @@ function countOf(tiles: Tile[], tile: Tile): number {
   return tiles.filter((t) => t === tile).length;
 }
 
-const SUIT_OF = (t: Tile) => ("btc".includes(t[0]) && t.length === 2 ? t[0] : null);
-const RANK_OF = (t: Tile) => Number(t.slice(1));
-
-/** Do these three tiles form a sequence (a chow)? Jokers never do. */
-function isSequence(a: Tile, b: Tile, c: Tile): boolean {
-  const suit = SUIT_OF(a);
-  if (!suit || SUIT_OF(b) !== suit || SUIT_OF(c) !== suit) return false;
-  const ranks = [RANK_OF(a), RANK_OF(b), RANK_OF(c)].sort((x, y) => x - y);
-  return ranks[1] === ranks[0] + 1 && ranks[2] === ranks[1] + 1;
-}
 
 export class Mahjong extends Server<Env> {
   static options = { hibernate: true };
@@ -772,12 +762,11 @@ export class Mahjong extends Server<Env> {
     const next = (w.from + 1) % n;
 
     // Winning claim: mahjong never reaches here (it resolves on
-    // arrival). Priority: pung and kong over chow; ties go to the
-    // seat closest to the discarder in turn order.
-    const rank = (k: ClaimKind) => (k === "chow" ? 1 : 0);
+    // arrival). All other claims rank alike; ties go to the seat
+    // closest to the discarder in turn order.
     const dist = (seat: number) => (seat - w.from + n) % n;
     const winner = [...w.claims].sort(
-      (a, b) => rank(a.kind) - rank(b.kind) || dist(a.seat) - dist(b.seat)
+      (a, b) => dist(a.seat) - dist(b.seat)
     )[0];
 
     if (w.escrow) {
@@ -1117,18 +1106,6 @@ export class Mahjong extends Server<Env> {
                 ...Array(naturals).fill(w.tile),
                 ...Array(jokers).fill("J"),
               ];
-            }
-          } else if (kind === "chow") {
-            // Only the next seat may take a chow, and only with the
-            // two natural partners it names.
-            const partners = cmd.tiles ?? [];
-            if (
-              seatIdx === (w.from + 1) % n &&
-              partners.length === 2 &&
-              containsAll(rack, partners) &&
-              isSequence(w.tile, partners[0], partners[1])
-            ) {
-              tiles = [...partners];
             }
           }
           if (tiles !== null) {

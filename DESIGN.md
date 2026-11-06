@@ -215,3 +215,19 @@ needs no information that is not already in the room's storage.
 The recording is per-hand: a new deal replaces it, a reset
 clears it, and rooms persisted before it simply start recording
 with their next deal.
+
+## No chows (2026-11-05)
+
+American mahjong has no sequences: a group is identical tiles
+only — pung, kong, quint, pair, single. The claim machinery
+nevertheless carried a chow kind end to end (client buttons,
+server claim branch with next-seat priority, a bot that would
+take one when the evaluator's distance dipped), a leftover from
+generic mahjong. It could only hurt: the card credits no chow,
+so every chow exposure was three dead tiles and a hand that
+could no longer win — which is how a real family game produced
+a 1-2-3 exposure its owner immediately sensed was wrong. The
+kind is removed everywhere; a chow claim from an old client now
+composes no tiles and is rejected like any other illegal claim.
+Rooms already holding an exposed chow keep it (history is
+history) — it just can never happen again.
