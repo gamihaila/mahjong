@@ -246,3 +246,16 @@ button.tile:hover { background: linear-gradient(180deg, #fffdf5, #f1ead2); }
   .tile.mini { width: 24px; height: 34px; }
   .melds .tile.mini { width: 24px; height: 34px; }
 }
+
+/* ---- drill room ---- */
+.drill-tabs { display: flex; gap: 8px; margin: 10px 0 14px; }
+.drill-tabs button.on { outline: 2px solid #92400e; font-weight: 700; }
+.drill-groups { display: inline-flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+.drill-group { display: inline-flex; gap: 2px; }
+.candidate { display: block; width: 100%; text-align: left; margin: 8px 0; padding: 10px 12px; border-radius: 10px; }
+.candidate .cand-head { display: flex; justify-content: space-between; font-weight: 700; margin-bottom: 6px; }
+.candidate .cand-note { display: block; margin-top: 6px; font-size: 13px; opacity: 0.8; }
+.candidate.right { outline: 3px solid #16a34a; }
+.candidate.wrong { outline: 3px solid #dc2626; }
+.tile.keep { outline: 3px solid #16a34a; outline-offset: 1px; }
+.feedback { background: #fffbeb; border: 1px solid #f59e0b; border-radius: 10px; padding: 10px 12px; margin: 12px 0; }
