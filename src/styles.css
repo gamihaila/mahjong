@@ -259,3 +259,7 @@ button.tile:hover { background: linear-gradient(180deg, #fffdf5, #f1ead2); }
 .candidate.wrong { outline: 3px solid #dc2626; }
 .tile.keep { outline: 3px solid #16a34a; outline-offset: 1px; }
 .feedback { background: #fffbeb; border: 1px solid #f59e0b; border-radius: 10px; padding: 10px 12px; margin: 12px 0; }
+.candidate { background: #fffdf8; color: #1c1917; border: 1px solid #d6cdbb; }
+.candidate:hover { background: #fffbeb; }
+.card-line { font-family: "Courier New", monospace; font-weight: 700; font-size: 20px; letter-spacing: .05em; display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.card-line .grp { white-space: nowrap; }

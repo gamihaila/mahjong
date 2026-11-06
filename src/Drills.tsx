@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CARD_2026, bestHands, type HandEval } from "./card";
+import { CARD_2026, bestHands, type CardHand, type HandEval } from "./card";
 import { buildWall, shuffle, sortTiles, tileLabel, type Tile } from "./tiles";
 import { TileSvg, TileBackSvg } from "./TileSvg";
 import { decideCharlestonPass, type BotView } from "../party/bot";
@@ -59,17 +59,26 @@ function deal13(): { rack: Tile[]; rest: Tile[] } {
   return { rack: sortTiles(wall.slice(0, 13)), rest: wall.slice(13) };
 }
 
-/** A hand's groups as little tile rows, the way they'd sit exposed. */
-function HandGroups({ groups }: { groups: Tile[][] }) {
+/** A hand printed the way the card prints it: the group tokens in
+ *  their slot colors, at reading size. (Rendered as miniature tiles
+ *  at first — too small to read on a phone.) Colors match the card
+ *  reference page exactly. */
+const SLOT_COLORS: Record<string, string> = {
+  b: "#1e40af",
+  g: "#15803d",
+  r: "#b91c1c",
+};
+
+function CardLine({ hand }: { hand: CardHand }) {
   return (
-    <span className="drill-groups">
-      {groups.map((g, gi) => (
-        <span key={gi} className="drill-group">
-          {g.map((t, ti) => (
-            <span key={ti} className="tile mini">
-              <TileSvg tile={t} />
-            </span>
-          ))}
+    <span className="card-line">
+      {hand.groups.map((g, i) => (
+        <span
+          key={i}
+          className="grp"
+          style={{ color: SLOT_COLORS[g.color] ?? "inherit" }}
+        >
+          {g.token}
         </span>
       ))}
     </span>
@@ -364,7 +373,8 @@ function TargetsDrill() {
     return (
       <div>
         <p>
-          A rack, three hands from the card: which one is this rack
+          A rack, three hands from the card — printed the way the
+          card prints them, note and all: which one is this rack
           actually closest to? Ten rounds. The skill being trained is
           the first one the game demands — looking at thirteen tiles
           and seeing the two or three futures they could become.
@@ -439,10 +449,8 @@ function TargetsDrill() {
             <span>{e.hand.section}</span>
             {picked !== null && <span>{e.missing} away</span>}
           </span>
-          <HandGroups groups={e.groups} />
-          {picked !== null && e.hand.note && (
-            <span className="cand-note">{e.hand.note}</span>
-          )}
+          <CardLine hand={e.hand} />
+          {e.hand.note && <span className="cand-note">{e.hand.note}</span>}
         </button>
       ))}
       {picked !== null && (

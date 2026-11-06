@@ -381,8 +381,8 @@ export interface HandEval {
    *  with multiplicity. Jokers always count as kept. */
   keep: Tile[];
   /** The best reading's groups as concrete tiles — the hand as it
-   *  would sit on the table. For display (the drill room renders
-   *  candidate hands from it); the matcher and bots ignore it. */
+   *  would sit on the table. For display; the matcher and bots
+   *  ignore it. */
   groups: Tile[][];
 }
 
