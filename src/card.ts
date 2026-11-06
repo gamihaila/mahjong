@@ -380,6 +380,10 @@ export interface HandEval {
   /** The rack tiles that serve the hand under its best reading,
    *  with multiplicity. Jokers always count as kept. */
   keep: Tile[];
+  /** The best reading's groups as concrete tiles — the hand as it
+   *  would sit on the table. For display (the drill room renders
+   *  candidate hands from it); the matcher and bots ignore it. */
+  groups: Tile[][];
 }
 
 /** Score a position against one hand: how far it is from done, and
@@ -435,7 +439,7 @@ export function evaluateHand(
           for (let i = 0; i < (countsOf(rackTiles).get("J") ?? 0); i++) {
             keep.push("J");
           }
-          if (!best || missing < best.missing) best = { hand, missing, keep };
+          if (!best || missing < best.missing) best = { hand, missing, keep, groups };
           return;
         }
         for (let gi = 0; gi < groups.length; gi++) {

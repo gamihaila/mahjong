@@ -149,3 +149,19 @@ rather than connection state, which is also more honest. The room
 object is no longer a connection manager at all — it answers
 commands and view requests, and bots and timers stay alarm-driven
 inside it exactly as before.
+
+## Drill room (2026-11-05)
+
+Solo practice lives entirely in the browser (src/Drills.tsx), linked
+from the join screen and the room header. Two drills, both graded by
+the game's own machinery: "Call the pass" runs a six-step Charleston
+against the good-company bot brain (party/bot.ts imports cleanly
+client-side — it depends only on the card and the tiles) and reports
+agreement plus the coach's target hands after each pass; "Name the
+hand" deals racks and asks which of three card hands is closest,
+graded by the evaluator. Client-side is safe here by construction:
+the card is public guide data and a drill has no hidden state and no
+opponent, so there is nothing to redact and nothing to verify. The
+one supporting change in shared code: HandEval now also carries its
+best reading's concretized groups, purely so candidates can render
+as tiles; the matcher and the bots ignore the field.

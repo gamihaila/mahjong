@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { tileLabel, type Tile } from "./tiles";
 import { TileSvg, TileBackSvg } from "./TileSvg";
+import Drills from "./Drills";
 
 // Client for slices 1-3: connect to a room, take (or reclaim) a seat,
 // and render the redacted view the server sends — your rack large,
@@ -137,6 +138,7 @@ export default function App() {
   );
   const [name, setName] = useState(() => localStorage.getItem("mj-name") ?? "");
   const [joined, setJoined] = useState(false);
+  const [drilling, setDrilling] = useState(false);
   const [view, setView] = useState<View | null>(null);
   const [status, setStatus] = useState("");
   const [idCounter] = useState(() => ({ n: 0 }));
@@ -390,6 +392,14 @@ export default function App() {
     };
   }, []);
 
+  if (drilling) {
+    return (
+      <div className="app">
+        <Drills onExit={() => setDrilling(false)} />
+      </div>
+    );
+  }
+
   if (!joined) {
     return (
       <div className="app">
@@ -412,6 +422,11 @@ export default function App() {
             Join room
           </button>
         </div>
+        <p>
+          <button className="quiet" onClick={() => setDrilling(true)}>
+            Drill room — practice solo →
+          </button>
+        </p>
         <p className="status">{status}</p>
       </div>
     );
@@ -489,6 +504,9 @@ export default function App() {
         </p>
         <button className="quiet" onClick={() => send("reset")}>
           Reset room
+        </button>{" "}
+        <button className="quiet" onClick={() => setDrilling(true)}>
+          Drill room
         </button>
       </header>
 
