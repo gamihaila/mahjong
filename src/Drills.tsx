@@ -694,11 +694,11 @@ function MovePrototype() {
       <section className="rack">
         <h2>Prototype rack</h2>
         <div
-          className="tiles"
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(8, 1fr)",
-            justifyItems: "center",
+            gridTemplateColumns: "repeat(8, minmax(0, 1fr))",
+            gap: 6,
+            width: "100%",
           }}
         >
           {slots.map((slot, i) =>
@@ -709,6 +709,13 @@ function MovePrototype() {
                 className={"tile" + (picked === i ? " selected" : "")}
                 aria-label={tileLabel(slot.tile)}
                 onClick={() => tap(i)}
+                style={{
+                  width: "100%",
+                  height: "auto",
+                  aspectRatio: "62 / 88",
+                  minWidth: 0,
+                  padding: 2,
+                }}
               >
                 <TileSvg tile={slot.tile} />
               </button>
@@ -719,7 +726,8 @@ function MovePrototype() {
                 aria-label="Empty slot"
                 onClick={() => tap(i)}
                 style={{
-                  width: "var(--rackw)",
+                  width: "100%",
+                  minWidth: 0,
                   aspectRatio: "62 / 88",
                   background: "transparent",
                   border: "2px dashed rgba(255,255,255,0.35)",
