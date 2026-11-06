@@ -1,4 +1,4 @@
-import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useState } from "react";
 import { CARD_2026, bestHands, type CardHand, type HandEval } from "./card";
 import { buildWall, shuffle, sortTiles, tileLabel, type Tile } from "./tiles";
 import { TileSvg, TileBackSvg } from "./TileSvg";
@@ -548,57 +548,64 @@ function TargetsDrill() {
 }
 
 
-// ---------- drag-and-drop prototype ----------
+// ---------- click-to-move prototype ----------
 
-// A lab for the interaction the live rack does not have yet:
-// press a tile and drag it where you want it, with real pointer
-// events (mouse and touch alike — HTML5 drag events barely exist
-// on touch screens). Nothing here touches the game or the other
-// drills; it exists so the feel can be judged on a real phone
-// before anyone commits to building it into the rack.
+// The second lab prototype, replacing drag-and-drop — which
+// worked but glitched, a held tile fighting the browser's own
+// gesture handling the whole way. This one is two taps and
+// fixed positions. The rack is 24 slots in three rows: 14 tiles
+// and 10 empty slots. Tap a tile to pick it up, then tap the
+// tile it should displace: everything from there shifts one
+// slot right, into the spare room, to make a place for it, and
+// the picked-up tile's old slot stays empty. Tap an empty slot
+// instead and the tile simply moves there. A space here is a
+// position, not a decoration: a group boundary is an empty slot
+// you chose to leave.
 
-interface DragTile {
+interface LabTile {
   id: string;
   tile: Tile;
 }
 
-interface DragRect {
-  top: number;
-  bottom: number;
-  left: number;
-  width: number;
-}
+type Slot = LabTile | null;
 
-/** Where a dragged tile would land among the tiles it hovers
- *  over: before the first tile whose row starts below the
- *  pointer, or whose left half the pointer is in; after all of
- *  them if it matches none. Rects are in display order with the
- *  dragged tile excluded. */
-function insertionIndex(rects: DragRect[], x: number, y: number): number {
-  for (let i = 0; i < rects.length; i++) {
-    const r = rects[i];
-    if (
-      y < r.top ||
-      (y >= r.top && y <= r.bottom && x < r.left + r.width / 2)
-    )
-      return i;
+const LAB_SLOTS = 24;
+
+/** Move slots[s] so it lands at slots[t], George's rule: the
+ *  tiles from t on shift one slot right into the nearest empty
+ *  slot to make room (if there is no empty slot to the right,
+ *  the tiles shift left into the nearest one on that side
+ *  instead). Tapping an empty t is a plain move. Anything else —
+ *  same slot, empty source — returns the rack unchanged. */
+function clickMove(slots: Slot[], s: number, t: number): Slot[] {
+  if (s === t || s < 0 || t < 0 || s >= slots.length || t >= slots.length)
+    return slots;
+  const held = slots[s];
+  if (held === null) return slots;
+  const next = [...slots];
+  next[s] = null;
+  if (slots[t] === null) {
+    next[t] = held;
+    return next;
   }
-  return rects.length;
+  for (let e = t + 1; e < next.length; e++) {
+    if (next[e] === null) {
+      for (let i = e; i > t; i--) next[i] = next[i - 1];
+      next[t] = held;
+      return next;
+    }
+  }
+  for (let l = t - 1; l >= 0; l--) {
+    if (next[l] === null) {
+      for (let i = l; i < t; i++) next[i] = next[i + 1];
+      next[t] = held;
+      return next;
+    }
+  }
+  return slots;
 }
 
-/** Remove the item at `from` and reinsert it at `insert`, an
- *  index into the array with the item already removed. */
-function moveItem<T>(arr: T[], from: number, insert: number): T[] {
-  if (from < 0 || from >= arr.length) return arr;
-  const next = [...arr];
-  const [it] = next.splice(from, 1);
-  const to = Math.max(0, Math.min(insert, next.length));
-  if (to === from) return arr;
-  next.splice(to, 0, it);
-  return next;
-}
-
-function withIds(tiles: Tile[]): DragTile[] {
+function withIds(tiles: Tile[]): LabTile[] {
   const seen = new Map<Tile, number>();
   return tiles.map((tile) => {
     const n = seen.get(tile) ?? 0;
@@ -607,183 +614,131 @@ function withIds(tiles: Tile[]): DragTile[] {
   });
 }
 
-function sampleDragTiles(): DragTile[] {
+function sampleSlots(): Slot[] {
   const wall = shuffle(buildWall());
-  return withIds(sortTiles(wall.slice(0, 14)));
+  const tiles = withIds(sortTiles(wall.slice(0, 14)));
+  const slots: Slot[] = Array.from({ length: LAB_SLOTS }, () => null);
+  tiles.forEach((tile, i) => {
+    slots[i] = tile;
+  });
+  return slots;
 }
 
-interface DragState {
-  id: string;
-  pointerId: number;
-  startX: number;
-  startY: number;
-  x: number;
-  y: number;
-  offsetX: number;
-  offsetY: number;
-  width: number;
-  height: number;
-  active: boolean;
-}
-
-function DragPrototype() {
-  const [items, setItems] = useState<DragTile[]>(() => sampleDragTiles());
-  const [drag, setDrag] = useState<DragState | null>(null);
+function MovePrototype() {
+  const [slots, setSlots] = useState<Slot[]>(() => sampleSlots());
+  const [picked, setPicked] = useState<number | null>(null);
   const [moves, setMoves] = useState(0);
-  const rackRef = useRef<HTMLDivElement | null>(null);
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
-  const dragRef = useRef<DragState | null>(null);
+  const pickedTile = picked !== null ? slots[picked] : null;
 
-  const dragItem = drag ? (items.find((it) => it.id === drag.id) ?? null) : null;
-
-  function reorderAt(x: number, y: number, id: string) {
-    const rack = rackRef.current;
-    if (!rack) return;
-    const rects: DragRect[] = [];
-    rack.querySelectorAll<HTMLElement>("[data-drag-id]").forEach((el) => {
-      if (el.dataset.dragId === id) return;
-      const r = el.getBoundingClientRect();
-      rects.push({ top: r.top, bottom: r.bottom, left: r.left, width: r.width });
-    });
-    const insert = insertionIndex(rects, x, y);
-    const prev = itemsRef.current;
-    const next = moveItem(prev, prev.findIndex((it) => it.id === id), insert);
-    if (next !== prev) {
-      itemsRef.current = next;
-      setItems(next);
+  function tap(i: number) {
+    if (picked === null) {
+      if (slots[i]) setPicked(i);
+      return;
+    }
+    if (i === picked) {
+      setPicked(null);
+      return;
+    }
+    const next = clickMove(slots, picked, i);
+    if (next !== slots) {
+      setSlots(next);
       setMoves((m) => m + 1);
     }
-  }
-
-  function onPointerDown(
-    e: ReactPointerEvent<HTMLButtonElement>,
-    item: DragTile
-  ) {
-    if (e.pointerType === "mouse" && e.button !== 0) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    dragRef.current = {
-      id: item.id,
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      x: e.clientX,
-      y: e.clientY,
-      offsetX: e.clientX - rect.left,
-      offsetY: e.clientY - rect.top,
-      width: rect.width,
-      height: rect.height,
-      active: false,
-    };
-    e.currentTarget.setPointerCapture(e.pointerId);
-  }
-
-  function onPointerMove(
-    e: ReactPointerEvent<HTMLButtonElement>,
-    item: DragTile
-  ) {
-    const s = dragRef.current;
-    if (!s || s.id !== item.id || s.pointerId !== e.pointerId) return;
-    if (
-      !s.active &&
-      Math.hypot(e.clientX - s.startX, e.clientY - s.startY) < 6
-    )
-      return;
-    const next = { ...s, x: e.clientX, y: e.clientY, active: true };
-    dragRef.current = next;
-    setDrag(next);
-    reorderAt(e.clientX, e.clientY, item.id);
-  }
-
-  function onPointerEnd(
-    e: ReactPointerEvent<HTMLButtonElement>,
-    item: DragTile
-  ) {
-    const s = dragRef.current;
-    if (!s || s.id !== item.id || s.pointerId !== e.pointerId) return;
-    dragRef.current = null;
-    setDrag(null);
+    setPicked(null);
   }
 
   function newRack() {
-    dragRef.current = null;
-    setDrag(null);
+    setSlots(sampleSlots());
+    setPicked(null);
     setMoves(0);
-    setItems(sampleDragTiles());
   }
 
   function sortRack() {
-    setItems((prev) => withIds(sortTiles(prev.map((it) => it.tile))));
+    const tiles = slots
+      .filter((s): s is LabTile => s !== null)
+      .map((s) => s.tile);
+    const sorted = withIds(sortTiles(tiles));
+    setSlots(
+      Array.from({ length: LAB_SLOTS }, (_, i) => sorted[i] ?? null)
+    );
+    setPicked(null);
   }
 
   return (
     <div>
       <section className="panel">
-        <h2>Drag lab</h2>
+        <h2>Move lab</h2>
         <p>
-          A prototype, kept away from the real game: press a tile
-          and drag it where you want it — mouse or finger. The
-          other tiles make room as you go. While you hold a tile it
-          owns the gesture, so the page won't scroll from the rack;
-          scroll from the panel edges instead.
+          The second prototype — dragging worked but glitched, so
+          this one is two taps. Tap the tile you want to move,
+          then tap the tile it should displace: everything from
+          there shuffles right to make room, and the moved tile's
+          old slot stays empty. Or tap any empty slot to just put
+          it there. The third row is spare room.
         </p>
         <div className="row">
           <button onClick={newRack}>New rack</button>
           <button className="quiet" onClick={sortRack}>
-            Sort
+            Sort &amp; compact
           </button>
           <span className="count">
             {moves} move{moves === 1 ? "" : "s"}
           </span>
         </div>
+        <p className="hint">
+          {pickedTile
+            ? `Moving ${tileLabel(pickedTile.tile)} — tap where it should go.`
+            : "Tap a tile to pick it up."}
+        </p>
       </section>
       <section className="rack">
         <h2>Prototype rack</h2>
-        <div className="tiles" ref={rackRef}>
-          {items.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className="tile"
-              data-drag-id={item.id}
-              aria-label={`Drag ${tileLabel(item.tile)}`}
-              style={{
-                touchAction: "none",
-                cursor: "grab",
-                opacity: drag?.id === item.id ? 0.3 : 1,
-              }}
-              onPointerDown={(e) => onPointerDown(e, item)}
-              onPointerMove={(e) => onPointerMove(e, item)}
-              onPointerUp={(e) => onPointerEnd(e, item)}
-              onPointerCancel={(e) => onPointerEnd(e, item)}
-            >
-              <TileSvg tile={item.tile} />
-            </button>
-          ))}
-        </div>
-        <p className="hint">
-          Order: {items.map((it) => tileLabel(it.tile)).join(" · ")}
-        </p>
-      </section>
-      {drag?.active && dragItem && (
         <div
-          aria-hidden
-          className="tile"
+          className="tiles"
           style={{
-            position: "fixed",
-            left: drag.x - drag.offsetX,
-            top: drag.y - drag.offsetY,
-            width: drag.width,
-            height: drag.height,
-            boxSizing: "border-box",
-            pointerEvents: "none",
-            zIndex: 60,
-            opacity: 0.95,
+            display: "grid",
+            gridTemplateColumns: "repeat(8, 1fr)",
+            justifyItems: "center",
           }}
         >
-          <TileSvg tile={dragItem.tile} />
+          {slots.map((slot, i) =>
+            slot ? (
+              <button
+                key={slot.id}
+                type="button"
+                className={"tile" + (picked === i ? " selected" : "")}
+                aria-label={tileLabel(slot.tile)}
+                onClick={() => tap(i)}
+              >
+                <TileSvg tile={slot.tile} />
+              </button>
+            ) : (
+              <button
+                key={`empty-${i}`}
+                type="button"
+                aria-label="Empty slot"
+                onClick={() => tap(i)}
+                style={{
+                  width: "var(--rackw)",
+                  aspectRatio: "62 / 88",
+                  background: "transparent",
+                  border: "2px dashed rgba(255,255,255,0.35)",
+                  borderRadius: 8,
+                  padding: 0,
+                  cursor: picked !== null ? "pointer" : "default",
+                }}
+              />
+            )
+          )}
         </div>
-      )}
+        <p className="hint">
+          Order:{" "}
+          {slots
+            .filter((s): s is LabTile => s !== null)
+            .map((s) => tileLabel(s.tile))
+            .join(" · ")}
+        </p>
+      </section>
     </div>
   );
 }
@@ -791,7 +746,7 @@ function DragPrototype() {
 // ---------- the room ----------
 
 export default function Drills({ onExit }: { onExit: () => void }) {
-  const [tab, setTab] = useState<"charleston" | "targets" | "drag">(
+  const [tab, setTab] = useState<"charleston" | "targets" | "move">(
     "charleston"
   );
   return (
@@ -820,10 +775,10 @@ export default function Drills({ onExit }: { onExit: () => void }) {
           Name the hand
         </button>
         <button
-          className={tab === "drag" ? "on" : ""}
-          onClick={() => setTab("drag")}
+          className={tab === "move" ? "on" : ""}
+          onClick={() => setTab("move")}
         >
-          Drag lab
+          Move lab
         </button>
       </div>
       {tab === "charleston" ? (
@@ -831,7 +786,7 @@ export default function Drills({ onExit }: { onExit: () => void }) {
       ) : tab === "targets" ? (
         <TargetsDrill key="t" />
       ) : (
-        <DragPrototype key="d" />
+        <MovePrototype key="d" />
       )}
     </div>
   );
