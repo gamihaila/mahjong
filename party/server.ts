@@ -9,6 +9,8 @@ import {
   type BotCommand,
   type BotView,
 } from "./bot";
+import { keyOk } from "./registry";
+export { RoomRegistry } from "./registry";
 
 // The room actor, on PartyServer (the PartyKit successor: same Durable
 // Object actor model, deployed with wrangler to our own Cloudflare
@@ -153,6 +155,8 @@ interface Command {
 
 interface Env {
   Mahjong: DurableObjectNamespace<Mahjong>;
+  Registry?: DurableObjectNamespace<import("./registry").RoomRegistry>;
+  ADMIN_KEY?: string;
 }
 
 const MAX_SEATS = 4;
@@ -305,11 +309,77 @@ export class Mahjong extends Server<Env> {
     if (Array.isArray(savedQueue)) {
       this.botQueue = new Map(savedQueue);
     }
+    await this.noteRegistry();
     await this.driveBots();
   }
 
   async persist() {
     await this.ctx.storage.put("state", this.state);
+    await this.noteRegistry();
+  }
+
+  /** The last room summary reported to the registry, so persist()
+   *  can stay silent while nothing it tracks has changed. */
+  lastReg = "";
+
+  /** Tell the room registry this room exists and what it looks
+   *  like now, so the admin page can list it. Bookkeeping must
+   *  never break a game, so every failure — no binding (the test
+   *  harness), registry hiccup, whatever — is swallowed, and the
+   *  call costs nothing while the summary is unchanged. */
+  async noteRegistry() {
+    try {
+      const reg = this.env.Registry;
+      if (!reg) return;
+      const s = this.state;
+      const humans = s.seats.filter((seat) => !seat.bot).length;
+      const summary = `${s.phase}|${s.seats.length}|${humans}`;
+      if (summary === this.lastReg) return;
+      this.lastReg = summary;
+      const stub = reg.get(reg.idFromName("registry"));
+      await stub.fetch("https://registry/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "register",
+          room: this.ctx.id.name ?? "unknown",
+          seats: s.seats.length,
+          humans,
+          phase: s.phase,
+        }),
+      });
+    } catch {
+      /* the registry is bookkeeping; never break a game for it */
+    }
+  }
+
+  /** The admin page's big red button: erase this room completely
+   *  — saved state, pending bot cues, the alarm — and take it off
+   *  the registry's list. Key-gated in onRequest; no undo. */
+  async wipeRoom() {
+    await this.ctx.storage.deleteAll();
+    await this.ctx.storage.deleteAlarm();
+    this.state = freshState();
+    this.botQueue = new Map();
+    this.botAttempts = new Map();
+    this.lastReg = "";
+    try {
+      const reg = this.env.Registry;
+      if (reg) {
+        const stub = reg.get(reg.idFromName("registry"));
+        await stub.fetch("https://registry/", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "forget",
+            room: this.ctx.id.name ?? "unknown",
+            key: this.env.ADMIN_KEY,
+          }),
+        });
+      }
+    } catch {
+      /* a stale registry row is cosmetic, not a failed wipe */
+    }
   }
 
   /** The redacted projection for one seat. This is the ONLY game data
@@ -489,6 +559,7 @@ export class Mahjong extends Server<Env> {
       cmd?: Command;
       since?: number;
       sig?: string;
+      key?: string;
     };
     try {
       body = (await req.json()) as typeof body;
@@ -497,6 +568,18 @@ export class Mahjong extends Server<Env> {
         { type: "error", error: "bad-request" },
         { status: 400 }
       );
+    }
+    if (body.action === "admin-wipe") {
+      // Not a game action: no seat token, and it must work on a
+      // room in any phase — that is rather the point of it.
+      if (!keyOk(this.env, body.key)) {
+        return Response.json(
+          { type: "error", error: "bad-key" },
+          { status: 403 }
+        );
+      }
+      await this.wipeRoom();
+      return Response.json({ type: "wiped" });
     }
     if (body.action === "join") {
       const res = await this.joinSeat(body.name ?? "Player", body.token ?? "");
