@@ -195,3 +195,23 @@ is an action on the room itself, which erases its storage and
 alarm, resets it to a fresh lobby, and removes its registry row.
 Listing, forgetting and wiping are gated by the ADMIN_KEY secret
 when one is set; without it (local dev) they are open.
+
+## Hand history and the replay recording (2026-11-05)
+
+When a hand ends, secrecy ends with it: the game-over view now
+carries every seat's final rack and the hand's own slice of the
+event log (from its deal onward), and the client renders both —
+final racks tile by tile, and a "How the hand went" timeline in
+the words of the table. Mid-hand nothing changes: no view ever
+contains another seat's rack or the log.
+
+Underneath, the hand is now recorded in full for a future
+step-through replay: the deal snapshot (every rack and the wall,
+in order, as dealt) plus every applied command of the hand in
+order, with one pseudo-command marking the alarm-driven escrow
+expiry — the only transition no command causes. Commands are the
+fold's input and the snapshot its initial state, so a replayer
+needs no information that is not already in the room's storage.
+The recording is per-hand: a new deal replaces it, a reset
+clears it, and rooms persisted before it simply start recording
+with their next deal.
