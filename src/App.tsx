@@ -174,7 +174,7 @@ function countIn(tiles: Tile[], t: Tile) {
 
 export default function App() {
   const [room, setRoom] = useState(
-    () => new URLSearchParams(location.search).get("room") ?? "family"
+    () => new URLSearchParams(location.search).get("room") ?? "Mihaila"
   );
   const [name, setName] = useState(() => localStorage.getItem("mj-name") ?? "");
   const [joined, setJoined] = useState(false);
