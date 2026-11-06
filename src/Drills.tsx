@@ -101,7 +101,16 @@ interface PassFeedback {
   agreed: number;
   notes: string[];
   targets: HandEval[];
+  /** The hands the coach was aiming at when it chose its pass —
+   *  the "why" behind the picks is read off these. */
+  aiming: HandEval[];
+  /** One plain-language reason per coach tile, in pass order. */
+  reasons: string[];
 }
+
+const suitOf = (t: Tile) =>
+  "btc".includes(t[0]) && t.length === 2 ? t[0] : null;
+const rankOf = (t: Tile) => Number(t.slice(1));
 
 function CharlestonDrill() {
   const [rest, setRest] = useState<Tile[]>([]);
@@ -123,6 +132,18 @@ function CharlestonDrill() {
     setAgreeTotal(0);
     setDone(false);
     setStarted(true);
+  }
+
+  const coachIdx = new Set<number>();
+  if (fb) {
+    const left = countsOf(fb.coach);
+    rack.forEach((t, i) => {
+      const n = left.get(t) ?? 0;
+      if (n > 0) {
+        left.set(t, n - 1);
+        coachIdx.add(i);
+      }
+    });
   }
 
   const blindStep = BLIND_STEPS.has(step);
@@ -151,7 +172,45 @@ function CharlestonDrill() {
     };
     const coach = decideCharlestonPass(view).tiles ?? [];
     const agreed = overlapCount(ownTiles, coach);
-    const best = bestHands(CARD_2026, rack, [], 1)[0];
+    // The coach's reasoning, reconstructed from the same evidence
+    // the bot brain uses: its three nearest hands and how many of
+    // each tile they keep (keepCounts in party/bot.ts, recomputed
+    // here from the evaluator's public output).
+    const aimingAll = bestHands(CARD_2026, rack, [], 3);
+    const aiming = aimingAll.slice(0, 3);
+    const want = new Map<Tile, number>();
+    for (const e of aimingAll) {
+      for (const [t, n] of countsOf(e.keep)) {
+        want.set(t, Math.max(want.get(t) ?? 0, n));
+      }
+    }
+    const have = countsOf(rack);
+    const reasons = coach.map((t) => {
+      const w = want.get(t) ?? 0;
+      const h = have.get(t) ?? 0;
+      if (w > 0 && h > w) {
+        return `a spare — its target hands use ${w}, you hold ${h}`;
+      }
+      if (w > 0) {
+        return "a last resort — everything else in the rack serves the targets even better";
+      }
+      const bits: string[] = [];
+      if (h === 1) bits.push("your only copy");
+      const suit = suitOf(t);
+      if (!suit && t !== "J" && t !== "F") {
+        bits.push("an honor — it can't be part of a run");
+      } else if (suit) {
+        const r = rankOf(t);
+        if (r === 1 || r === 9) bits.push("an end tile — only one run can use it");
+        const connected = rack.some(
+          (o) => o !== t && suitOf(o) === suit && Math.abs(rankOf(o) - r) <= 2
+        );
+        if (!connected) bits.push("nothing near it in its suit");
+      }
+      bits.push("serves none of the coach's target hands");
+      return bits.join("; ");
+    });
+    const best = aimingAll[0];
     const notes: string[] = [];
     if (agreed === 3) {
       notes.push("The coach passes exactly those three.");
@@ -180,7 +239,7 @@ function CharlestonDrill() {
     }
     const targets = bestHands(CARD_2026, subtractTiles(rack, ownTiles), [], 2);
     setAgreeTotal((n) => n + agreed);
-    setFb({ coach, own: ownTiles, blind, agreed, notes, targets });
+    setFb({ coach, own: ownTiles, blind, agreed, notes, targets, aiming, reasons });
   }
 
   function next() {
@@ -253,7 +312,11 @@ function CharlestonDrill() {
         {rack.map((t, i) => (
           <button
             key={`${t}-${i}`}
-            className={"tile" + (selected.includes(i) ? " selected" : "")}
+            className={
+              "tile" +
+              (selected.includes(i) ? " selected" : "") +
+              (coachIdx.has(i) ? " coach" : "")
+            }
             onClick={() => toggle(i)}
           >
             <TileSvg tile={t} />
@@ -285,26 +348,41 @@ function CharlestonDrill() {
       ) : (
         <div className="feedback">
           <p>
-            The coach passes{" "}
-            <span className="drill-group">
-              {fb.coach.map((t, i) => (
-                <span key={i} className="tile mini">
-                  <TileSvg tile={t} />
-                </span>
-              ))}
-            </span>{" "}
-            — you agreed on <strong>{fb.agreed} of 3</strong>.
+            <strong>The coach is aiming at:</strong>
           </p>
+          {fb.aiming.map((e, i) => (
+            <p key={i} className="coach-target">
+              <CardLine hand={e.hand} />{" "}
+              <span className="away">{e.missing} away</span>
+            </p>
+          ))}
+          <p>
+            Against those hands, the coach passes — its three are
+            ringed in blue on your rack; you agreed on{" "}
+            <strong>{fb.agreed} of 3</strong>:
+          </p>
+          <ul className="why">
+            {fb.coach.map((t, i) => (
+              <li key={i}>
+                <strong>{tileLabel(t)}</strong> — {fb.reasons[i]}
+              </li>
+            ))}
+          </ul>
           {fb.notes.map((n, i) => (
             <p key={i}>{n}</p>
           ))}
           {fb.targets.length > 0 && (
-            <p>
-              After this pass the rack points at:{" "}
-              {fb.targets
-                .map((e) => `${handTitle(e)} (${e.missing} away)`)
-                .join(" · ")}
-            </p>
+            <>
+              <p>
+                <strong>After this pass, your rack points at:</strong>
+              </p>
+              {fb.targets.map((e, i) => (
+                <p key={i} className="coach-target">
+                  <CardLine hand={e.hand} />{" "}
+                  <span className="away">{e.missing} away</span>
+                </p>
+              ))}
+            </>
           )}
           <button onClick={next}>
             {step === 5 ? "Finish" : "Next pass"}
