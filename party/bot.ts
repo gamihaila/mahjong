@@ -27,7 +27,7 @@ export interface BotCommand {
   tile?: Tile;
   tiles?: Tile[];
   blind?: number;
-  kind?: "pung" | "kong" | "chow" | "mahjong";
+  kind?: "pung" | "kong" | "mahjong";
   owner?: number;
   meld?: number;
   agree?: boolean;
@@ -150,7 +150,7 @@ export function decideCharlestonPass(view: BotView): BotCommand {
 }
 
 /** The live discard: take it when it completes the hand, or when a
- *  pung, kong or chow with it brings the nearest hand closer.
+ *  pung or kong with it brings the nearest hand closer.
  *  Otherwise decline. */
 export function decideWindow(view: BotView): BotCommand | null {
   const p = view.play;
@@ -194,29 +194,6 @@ export function decideWindow(view: BotView): BotCommand | null {
     if (after < base) return { type: "claim", kind };
   }
 
-  // Chow: only the seat after the discarder, with natural partners.
-  const n = view.seats.length;
-  if (you === (w.from + 1) % n) {
-    const suit = SUIT_OF(w.tile);
-    if (suit) {
-      const r = RANK_OF(w.tile);
-      const shapes = [
-        [r - 2, r - 1],
-        [r - 1, r + 1],
-        [r + 1, r + 2],
-      ];
-      for (const [a, b] of shapes) {
-        if (a < 1 || b > 9) continue;
-        const partners: Tile[] = [`${suit}${a}`, `${suit}${b}`];
-        if (!partners.every((t) => rack.includes(t))) continue;
-        const after = bestMissing(subtract(rack, partners), [
-          ...melds,
-          { tiles: [w.tile, ...partners] },
-        ]);
-        if (after < base) return { type: "claim", kind: "chow", tiles: partners };
-      }
-    }
-  }
   return { type: "pass" };
 }
 
