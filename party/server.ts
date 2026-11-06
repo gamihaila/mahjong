@@ -127,6 +127,16 @@ interface PlayState {
   winInfo: WinInfo | null;
 }
 
+/** One entry of a hand's replay recording: an applied command
+ *  (seat >= 0) or an alarm-driven transition (seat -1). Together
+ *  with the deal snapshot this is everything a step-through
+ *  replay needs to re-fold the hand later: the commands are the
+ *  fold's input, the snapshot its initial state. */
+interface ReplayEntry {
+  seat: number;
+  cmd: Partial<Command> & { type: string };
+}
+
 interface GameState {
   phase: Phase;
   seats: Seat[];
@@ -137,6 +147,11 @@ interface GameState {
   version: number;
   log: GameEvent[];
   processedIds: string[];
+  /** The deal that opened the current hand: every seat's rack
+   *  and the wall, in order, as dealt. Null outside a hand. */
+  deal: { hands: Tile[][]; wall: Tile[] } | null;
+  /** Applied commands of the current hand, in order. */
+  replay: ReplayEntry[];
 }
 
 interface Command {
@@ -235,6 +250,8 @@ function freshState(): GameState {
     version: 0,
     log: [],
     processedIds: [],
+    deal: null,
+    replay: [],
   };
 }
 
@@ -294,6 +311,10 @@ export class Mahjong extends Server<Env> {
     } else if (saved) {
       await this.ctx.storage.delete("state");
     }
+    // Rooms persisted before the replay recording have neither
+    // field; normalize rather than wedge them.
+    if (!Array.isArray(this.state.replay)) this.state.replay = [];
+    if (this.state.deal === undefined) this.state.deal = null;
     // Restore the bots' pending cues WITH their original due
     // times. The queue used to live only in memory, so every
     // wake re-delayed each cue by a fresh human-pace delay — and
@@ -390,6 +411,14 @@ export class Mahjong extends Server<Env> {
    *  escrowed draw, and escrowed passes are never in any view. */
   viewFor(seatIdx: number) {
     const s = this.state;
+    // Post-hand, secrecy ends: the view carries every seat's final
+    // rack and the hand's own slice of the event log (from its
+    // deal onward), so the table can review how the hand went.
+    // Mid-hand, neither exists in any view — the recording (deal
+    // snapshot + applied commands) stays server-side too, kept
+    // for a future step-through replay.
+    const over = s.phase === "over";
+    const logCut = over ? s.log.map((e) => e.type).lastIndexOf("start") : -1;
     const c = s.phase === "charleston" ? s.charleston : null;
     const p = s.play;
     const myPass = c && seatIdx >= 0 ? c.passes[seatIdx] : null;
@@ -448,6 +477,8 @@ export class Mahjong extends Server<Env> {
             winInfo: p.winInfo,
           }
         : null,
+      finalHands: over ? s.hands.map((h) => sortTiles(h)) : undefined,
+      history: over ? (logCut >= 0 ? s.log.slice(logCut) : s.log) : undefined,
     };
   }
 
@@ -800,6 +831,14 @@ export class Mahjong extends Server<Env> {
   async onAlarm() {
     const w = this.state.play?.window;
     if (w?.escrow && Date.now() >= w.escrow.deadline) {
+      // An alarm-driven transition: record it, or a replay fold
+      // would wait forever for a command that never comes.
+      if (this.state.deal) {
+        this.state.replay.push({
+          seat: -1,
+          cmd: { type: "__escrow-expired" },
+        });
+      }
       await this.resolveWindow();
     }
     await this.runDueBots();
@@ -891,6 +930,9 @@ export class Mahjong extends Server<Env> {
       s.phase = "charleston";
       s.charleston = freshCharleston(s.seats.length);
       s.play = null;
+      // Open the hand's replay recording with its initial state.
+      s.deal = { hands: s.hands.map((h) => [...h]), wall: [...s.wall] };
+      s.replay = [];
       this.appendEvent("start", seatIdx, `${s.seats.length} players`);
       applied = true;
     } else if (cmd.type === "pass" && s.phase === "charleston" && s.charleston) {
@@ -1204,12 +1246,32 @@ export class Mahjong extends Server<Env> {
         s.wall = [];
         s.charleston = null;
         s.play = null;
+        s.deal = null;
+        s.replay = [];
         this.appendEvent("reset", seatIdx);
         applied = true;
       }
     }
 
     if (applied) {
+      // The hand's replay recording: every applied command of the
+      // hand, in order, minus the delivery plumbing (id, base
+      // version). Lobby bookkeeping before the deal is not part
+      // of the hand; the start command itself opens the stream
+      // (its branch just reset it), and a reset closes it by
+      // clearing the snapshot, so it is never recorded.
+      if (s.deal && cmd.type !== "reset") {
+        const core: Partial<Command> & { type: string } = { type: cmd.type };
+        if (cmd.tiles) core.tiles = [...cmd.tiles];
+        if (cmd.tile) core.tile = cmd.tile;
+        if (cmd.blind !== undefined) core.blind = cmd.blind;
+        if (cmd.agree !== undefined) core.agree = cmd.agree;
+        if (cmd.kind) core.kind = cmd.kind;
+        if (cmd.owner !== undefined) core.owner = cmd.owner;
+        if (cmd.meld !== undefined) core.meld = cmd.meld;
+        if (cmd.seat !== undefined) core.seat = cmd.seat;
+        s.replay.push({ seat: seatIdx, cmd: core });
+      }
       s.version++;
       s.processedIds.push(cmd.id);
       if (s.processedIds.length > PROCESSED_CAP) {
