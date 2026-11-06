@@ -172,6 +172,112 @@ function countIn(tiles: Tile[], t: Tile) {
   return tiles.filter((x) => x === t).length;
 }
 
+
+// ---- rack arrangement (client-side only) ----
+// The order you keep your tiles in — and the spaces between groups —
+// is presentation, never game state: nothing here is sent to the
+// server, enters the event log, or shows up in a replay. The layout
+// is a preference list of tile instances plus gap markers, matched
+// against each fresh view by tile identity (tiles of a kind are
+// fungible, so the match is by count). Tiles that leave drop out;
+// tiles that arrive append at the end. Selection state keeps
+// speaking in the server's own rack indices; display entries carry
+// the server index (baseIdx) back to the click handlers.
+type RackItem =
+  | { kind: "tile"; id: number; tile: Tile }
+  | { kind: "gap"; id: number };
+
+type RackDisplayEntry =
+  | { tile: Tile; baseIdx: number; id: number }
+  | { gap: true };
+
+let rackIdSeq = 1;
+
+function loadRackItems(roomName: string): RackItem[] {
+  try {
+    const raw = localStorage.getItem(`mj-rack-${roomName}`);
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as (Tile | "GAP")[];
+    if (!Array.isArray(arr)) return [];
+    return arr.map((x) =>
+      x === "GAP"
+        ? { kind: "gap", id: rackIdSeq++ }
+        : { kind: "tile", id: rackIdSeq++, tile: x }
+    );
+  } catch {
+    return [];
+  }
+}
+
+// Fold the preference list into the rack the server reports: drop
+// tiles that are gone, append tiles that are new (in server order),
+// and prune gaps that would lead, trail or double up.
+function rackCommit(items: RackItem[], base: Tile[]): RackItem[] {
+  const counts = new Map<Tile, number>();
+  base.forEach((t) => counts.set(t, (counts.get(t) ?? 0) + 1));
+  const kept: RackItem[] = [];
+  for (const it of items) {
+    if (it.kind === "gap") {
+      kept.push(it);
+      continue;
+    }
+    const n = counts.get(it.tile) ?? 0;
+    if (n > 0) {
+      counts.set(it.tile, n - 1);
+      kept.push(it);
+    }
+  }
+  base.forEach((t) => {
+    const n = counts.get(t) ?? 0;
+    if (n > 0) {
+      counts.set(t, n - 1);
+      kept.push({ kind: "tile", id: rackIdSeq++, tile: t });
+    }
+  });
+  const out: RackItem[] = [];
+  for (const it of kept) {
+    if (
+      it.kind === "gap" &&
+      (out.length === 0 || out[out.length - 1].kind === "gap")
+    )
+      continue;
+    out.push(it);
+  }
+  while (out.length > 0 && out[out.length - 1].kind === "gap") out.pop();
+  return out;
+}
+
+// Produce the display list for the current view: preference order,
+// each tile annotated with its index in the server's rack order.
+function rackDisplay(items: RackItem[], base: Tile[]): RackDisplayEntry[] {
+  const queues = new Map<Tile, number[]>();
+  base.forEach((t, i) => {
+    const q = queues.get(t);
+    if (q) q.push(i);
+    else queues.set(t, [i]);
+  });
+  const used = new Set<number>();
+  const out: RackDisplayEntry[] = [];
+  for (const it of items) {
+    if (it.kind === "gap") {
+      if (out.length > 0 && !("gap" in out[out.length - 1]))
+        out.push({ gap: true });
+      continue;
+    }
+    const q = queues.get(it.tile);
+    if (q && q.length > 0) {
+      const baseIdx = q.shift()!;
+      used.add(baseIdx);
+      out.push({ tile: it.tile, baseIdx, id: it.id });
+    }
+  }
+  base.forEach((t, i) => {
+    if (!used.has(i)) out.push({ tile: t, baseIdx: i, id: -1 - i });
+  });
+  while (out.length > 0 && "gap" in out[out.length - 1]) out.pop();
+  return out;
+}
+
 export default function App() {
   const [room, setRoom] = useState(
     () => new URLSearchParams(location.search).get("room") ?? "game"
@@ -192,6 +298,13 @@ export default function App() {
   const [touched, setTouched] = useState(false);
   // Play loop: the rack index selected to discard.
   const [discardIdx, setDiscardIdx] = useState<number | null>(null);
+  // Rack arrangement: preference list, the arrange-mode toggle, and
+  // the entry currently picked up in arrange mode.
+  const [rackItems, setRackItems] = useState<RackItem[]>(() =>
+    loadRackItems(room)
+  );
+  const [arranging, setArranging] = useState(false);
+  const [arrangeId, setArrangeId] = useState<number | null>(null);
 
   const tokenRef = useRef("");
   const viewRef = useRef<View | null>(null);
@@ -216,6 +329,38 @@ export default function App() {
     }
   }, [c?.yourPass, touched]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => setDiscardIdx(null), [view?.version]);
+
+  // Keep the arrangement folded into the current rack (never in the
+  // lobby, where an empty rack would wipe it), and persist it per
+  // room so it survives reloads and reconnects.
+  const rackBase: Tile[] = view
+    ? view.phase === "charleston"
+      ? [...view.yourTiles, ...(c?.yourPass ?? [])]
+      : view.yourTiles
+    : [];
+  const rackSig = rackBase.join(",");
+  useEffect(() => {
+    if (!view || view.phase === "lobby" || rackBase.length === 0) return;
+    setRackItems((prev) => {
+      const next = rackCommit(prev, rackBase);
+      return next.length === prev.length &&
+        next.every((x, i) => x === prev[i])
+        ? prev
+        : next;
+    });
+  }, [rackSig, view?.phase]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        `mj-rack-${room}`,
+        JSON.stringify(
+          rackItems.map((it) => (it.kind === "gap" ? "GAP" : it.tile))
+        )
+      );
+    } catch {
+      // storage unavailable: the arrangement just won't persist
+    }
+  }, [rackItems, room]);
 
   // ---- transport: HTTP request/response + polling ----
   // There is no socket. Every request carries the seat token and
@@ -493,6 +638,36 @@ export default function App() {
       if (sel.includes(i)) return sel.filter((x) => x !== i);
       if (sel.length >= 3) return sel;
       return [...sel, i];
+    });
+  }
+
+  // Arrange mode: swap the picked-up entry with its neighbour (a
+  // tile or a gap — swapping with a gap moves the tile across the
+  // group boundary), and toggle a gap immediately before it.
+  function moveRackItem(dir: -1 | 1) {
+    if (arrangeId === null) return;
+    setRackItems((prev) => {
+      const i = prev.findIndex((it) => it.id === arrangeId);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= prev.length) return prev;
+      const next = [...prev];
+      const tmp = next[i];
+      next[i] = next[j];
+      next[j] = tmp;
+      return next;
+    });
+  }
+
+  function toggleRackGap() {
+    if (arrangeId === null) return;
+    setRackItems((prev) => {
+      const i = prev.findIndex((it) => it.id === arrangeId);
+      if (i < 0) return prev;
+      if (i > 0 && prev[i - 1].kind === "gap")
+        return prev.filter((_, x) => x !== i - 1);
+      const next = [...prev];
+      next.splice(i, 0, { kind: "gap", id: rackIdSeq++ });
+      return next;
     });
   }
 
@@ -915,35 +1090,45 @@ export default function App() {
         <section className="rack">
           <h2>Your tiles</h2>
           <div className="tiles">
-            {(view.phase === "charleston" ? rackTiles : view.yourTiles).map(
-              (t, i) => {
-                const inPass =
-                  view.phase === "charleston" && i >= view.yourTiles.length;
-                return (
-                  <button
-                    key={`${t}-${i}`}
-                    className={
-                      "tile" +
-                      (inPass ? " passed" : "") +
-                      (selected.includes(i) || discardIdx === i
-                        ? " selected"
-                        : "")
-                    }
-                    disabled={
-                      view.phase === "charleston"
+            {rackDisplay(
+              rackItems,
+              view.phase === "charleston" ? rackTiles : view.yourTiles
+            ).map((d, di) =>
+              "gap" in d ? (
+                <span key={`gap-${di}`} className="rackgap" />
+              ) : (
+                <button
+                  key={d.id}
+                  className={
+                    "tile" +
+                    (view.phase === "charleston" &&
+                    d.baseIdx >= view.yourTiles.length
+                      ? " passed"
+                      : "") +
+                    (selected.includes(d.baseIdx) || discardIdx === d.baseIdx
+                      ? " selected"
+                      : "") +
+                    (arranging && arrangeId === d.id ? " arranging" : "")
+                  }
+                  disabled={
+                    arranging
+                      ? false
+                      : view.phase === "charleston"
                         ? false
                         : !mustDiscard
-                    }
-                    onClick={() => {
-                      if (view.phase === "charleston") toggleTile(i);
-                      else if (mustDiscard)
-                        setDiscardIdx(discardIdx === i ? null : i);
-                    }}
-                  >
-                    <TileSvg tile={t} />
-                  </button>
-                );
-              }
+                  }
+                  onClick={() => {
+                    if (arranging) setArrangeId(d.id);
+                    else if (view.phase === "charleston") toggleTile(d.baseIdx);
+                    else if (mustDiscard)
+                      setDiscardIdx(
+                        discardIdx === d.baseIdx ? null : d.baseIdx
+                      );
+                  }}
+                >
+                  <TileSvg tile={d.tile} />
+                </button>
+              )
             )}
             {w?.youEscrowed && <span className="tile facedown"><TileBackSvg /></span>}
             {view.phase === "charleston" &&
@@ -951,6 +1136,45 @@ export default function App() {
                 <span key={`blind-${i}`} className="tile facedown"><TileBackSvg /></span>
               ))}
           </div>
+          {(view.phase === "charleston" || view.phase === "playing") && (
+            <div className="arrangebar">
+              <button
+                className="quiet"
+                onClick={() => {
+                  setArranging(!arranging);
+                  setArrangeId(null);
+                }}
+              >
+                {arranging ? "Done arranging" : "Arrange tiles"}
+              </button>
+              {arranging && (
+                <>
+                  <button
+                    disabled={arrangeId === null}
+                    onClick={() => moveRackItem(-1)}
+                  >
+                    ◀ Move
+                  </button>
+                  <button
+                    disabled={arrangeId === null}
+                    onClick={() => moveRackItem(1)}
+                  >
+                    Move ▶
+                  </button>
+                  <button
+                    disabled={arrangeId === null}
+                    onClick={toggleRackGap}
+                  >
+                    Space before
+                  </button>
+                  <span className="blind-hint">
+                    Tap a tile to pick it up. Your order and spaces are
+                    yours alone — they never leave this device.
+                  </span>
+                </>
+              )}
+            </div>
+          )}
           {view.phase === "charleston" && c && (
             <div className="passbar">
               {isBlindStep && (
