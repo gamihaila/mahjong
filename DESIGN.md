@@ -165,3 +165,16 @@ opponent, so there is nothing to redact and nothing to verify. The
 one supporting change in shared code: HandEval now also carries its
 best reading's concretized groups, purely so candidates can render
 as tiles; the matcher and the bots ignore the field.
+
+## No mid-hand resets (2026-11-05)
+
+A reset used to be the friendly way to abandon a hand: one tap, and
+the table went back to the lobby. It ended a real family game when a
+player tapped it by accident mid-play — the button sits on every
+screen, and the consent guard covered only the Charleston. Rather
+than grow a second vote, resets are now simply refused while a hand
+is underway (Charleston or play, anyone's tap, solo included), with
+the note naming the real ways out: a Charleston can still be voided
+by unanimous vote, and any hand can be abandoned by leaving — a room
+costs nothing, so start a new one. In the lobby and after a finished
+hand, reset still tidies the table.
