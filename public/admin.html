@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mahjong — room admin</title>
+<style>
+  body { font-family: Georgia, 'Times New Roman', serif; background: #f6f1e7; color: #1c1917; margin: 0; padding: 24px 16px 48px; }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 26px; letter-spacing: .08em; margin: 0 0 4px; }
+  .sub { color: #57534e; margin: 0 0 18px; }
+  .keybar { display: flex; gap: 8px; margin-bottom: 16px; }
+  input[type="password"] { flex: 1; font-size: 16px; padding: 8px 10px; border: 1px solid #d6cdbb; border-radius: 8px; background: #fffdf8; }
+  button { font: inherit; font-weight: 600; border: none; border-radius: 999px; padding: 8px 18px; background: #facc15; color: #422006; cursor: pointer; }
+  button:hover { background: #fde047; }
+  button.wipe { background: #fecaca; color: #7f1d1d; padding: 4px 14px; }
+  button.wipe:hover { background: #fca5a5; }
+  table { width: 100%; border-collapse: collapse; background: #fffdf8; border: 1px solid #d6cdbb; border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px dotted #e3dac6; font-size: 15px; }
+  th { background: #7f1d1d; color: #fff; font-family: Helvetica, Arial, sans-serif; font-size: 13px; letter-spacing: .1em; }
+  tr:last-child td { border-bottom: none; }
+  .err { color: #b91c1c; min-height: 1.2em; }
+  .empty { color: #57534e; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Room admin</h1>
+  <p class="sub">Every room the game knows about, freshest first. Wiping a room deletes its saved game for good — there is no undo.</p>
+  <div class="keybar">
+    <input id="key" type="password" placeholder="Admin key" autocomplete="off" />
+    <button id="load">Load rooms</button>
+  </div>
+  <p class="err" id="err"></p>
+  <div id="out"></div>
+</div>
+<script>
+  const keyInput = document.getElementById("key");
+  const out = document.getElementById("out");
+  const err = document.getElementById("err");
+  keyInput.value = sessionStorage.getItem("mj-admin-key") || "";
+
+  function ago(ts) {
+    const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (s < 60) return s + "s ago";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    return Math.floor(s / 86400) + "d ago";
+  }
+
+  async function post(url, body) {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return r.json();
+  }
+
+  async function load() {
+    err.textContent = "";
+    const key = keyInput.value.trim();
+    sessionStorage.setItem("mj-admin-key", key);
+    const res = await post("/parties/registry/registry", { action: "list", key });
+    if (res.type === "error") {
+      err.textContent = res.error === "bad-key" ? "That key was not accepted." : "Could not load: " + res.error;
+      out.innerHTML = "";
+      return;
+    }
+    if (!res.rooms.length) {
+      out.innerHTML = '<p class="empty">No rooms have reported in yet.</p>';
+      return;
+    }
+    const rows = res.rooms.map((r) =>
+      "<tr><td><strong>" + r.name + "</strong></td><td>" + r.phase + "</td><td>" +
+      r.seats + " (" + r.humans + " human)</td><td>" + ago(r.updatedAt) + "</td>" +
+      '<td><button class="wipe" data-room="' + r.name + '">Wipe</button></td></tr>'
+    ).join("");
+    out.innerHTML = "<table><tr><th>Room</th><th>Phase</th><th>Seats</th><th>Last active</th><th></th></tr>" + rows + "</table>";
+    out.querySelectorAll("button.wipe").forEach((b) => {
+      b.addEventListener("click", () => wipe(b.getAttribute("data-room")));
+    });
+  }
+
+  async function wipe(room) {
+    if (!confirm("Wipe room \u201C" + room + "\u201D? Its saved game is deleted for good.")) return;
+    const key = keyInput.value.trim();
+    const res = await post("/parties/mahjong/" + encodeURIComponent(room), { action: "admin-wipe", key });
+    if (res.type === "error") {
+      err.textContent = res.error === "bad-key" ? "That key was not accepted." : "Wipe failed: " + res.error;
+      return;
+    }
+    load();
+  }
+
+  document.getElementById("load").addEventListener("click", load);
+  if (keyInput.value) load();
+</script>
+</body>
+</html>

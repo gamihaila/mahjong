@@ -178,3 +178,20 @@ the note naming the real ways out: a Charleston can still be voided
 by unanimous vote, and any hand can be abandoned by leaving — a room
 costs nothing, so start a new one. In the lobby and after a finished
 hand, reset still tidies the table.
+
+## Room admin (2026-11-05)
+
+Rooms are Durable Objects, and Durable Objects cannot enumerate
+their siblings — there is no "list all rooms" API to build an
+admin page on. So the game keeps a registry: a singleton object
+that every room reports itself to whenever its summary changes
+(phase, seats, humans). The report is hooked into persist() and
+gated on the summary actually changing, so a game in progress
+costs the registry nothing, and a failed report never breaks a
+game. The registry stores summaries only, never game state. The
+admin page (public/admin.html, linked nowhere — you have to know
+the URL) lists rooms freshest first and can wipe one: the wipe
+is an action on the room itself, which erases its storage and
+alarm, resets it to a fresh lobby, and removes its registry row.
+Listing, forgetting and wiping are gated by the ADMIN_KEY secret
+when one is set; without it (local dev) they are open.
