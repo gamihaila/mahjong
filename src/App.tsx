@@ -68,6 +68,68 @@ interface View {
   wallCount: number;
   charleston: CharlestonView | null;
   play: PlayView | null;
+  /** Only once the hand is over: every seat's final rack, and the
+   *  hand's own slice of the room's event log. */
+  finalHands?: Tile[][];
+  history?: HistoryEvent[];
+}
+
+interface HistoryEvent {
+  seq: number;
+  type: string;
+  seat?: number;
+  detail?: string;
+}
+
+/** One line of the post-hand timeline, in the words of the table. */
+function historyLine(e: HistoryEvent, view: View): string {
+  const who =
+    e.seat !== undefined && e.seat >= 0
+      ? view.seats[e.seat]?.name ?? "Someone"
+      : "";
+  const d = e.detail ?? "";
+  switch (e.type) {
+    case "start":
+      return `Dealt to ${d} — the Charleston begins.`;
+    case "pass":
+      return `${who} passed (${d}).`;
+    case "charleston-pass":
+      return `Charleston ${d} — passes exchanged.`;
+    case "charleston-done":
+      return "Charleston complete.";
+    case "void-propose":
+      return `${who} proposed voiding the hand.`;
+    case "void-agree":
+      return `${who} agreed to void.`;
+    case "void-declined":
+      return `${who} declined to void.`;
+    case "voided":
+      return "Hand voided.";
+    case "draw":
+      return d === "escrow"
+        ? `${who} drew — the tile sits in escrow while claims are open.`
+        : d === "uncontested"
+          ? `${who} took the escrowed tile.`
+          : `${who} drew a tile.`;
+    case "discard":
+      return `${who} discarded ${d}.`;
+    case "claim-intent":
+      return `${who} wants ${d}.`;
+    case "no-claim":
+      return `${who} passed on it.`;
+    case "claim":
+      return `${who} claimed: ${d}.`;
+    case "exchange":
+      return `${who} exchanged ${d}.`;
+    case "declare":
+      return `${who} declared mahjong (self-drawn).`;
+    case "mahjong":
+      return `${who} has mahjong!`;
+    case "wall-game":
+      return "The wall ran out — no winner.";
+    default:
+      return d ? `${who} ${e.type} ${d}`.trim() : `${who} ${e.type}`.trim();
+  }
 }
 
 const WINDS = ["East", "South", "West", "North"];
@@ -850,6 +912,35 @@ export default function App() {
             <p>
               {p.winInfo.section} · {p.winInfo.display}
             </p>
+          )}
+          {view.finalHands && (
+            <div className="final-hands">
+              <h3>Final racks</h3>
+              {view.finalHands.map((hand, i) => (
+                <div key={i} className="final-hand">
+                  <span className="final-name">
+                    {view.seats[i]?.name}
+                  </span>
+                  <span className="tiles">
+                    {hand.map((t, j) => (
+                      <span key={`${t}-${j}`} className="tile">
+                        <TileSvg tile={t} />
+                      </span>
+                    ))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {view.history && view.history.length > 0 && (
+            <div className="history">
+              <h3>How the hand went</h3>
+              <ol>
+                {view.history.map((e) => (
+                  <li key={e.seq}>{historyLine(e, view)}</li>
+                ))}
+              </ol>
+            </div>
           )}
           <button onClick={() => send("reset")}>Back to the lobby</button>
         </section>
