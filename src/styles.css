@@ -212,6 +212,9 @@ button.tile:hover { background: linear-gradient(180deg, #fffdf5, #f1ead2); }
   aspect-ratio: 62 / 88;
 }
 .passbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.arrangebar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rackgap { flex: 0 0 16px; }
+.tile.arranging { outline: 3px solid #d97706; outline-offset: 1px; }
 .blind-hint { font-size: 13.5px; opacity: 0.75; font-style: italic; }
 
 /* Play loop (slice 3) */
