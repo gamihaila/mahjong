@@ -29,7 +29,7 @@ interface CharlestonView {
 }
 
 interface MeldView {
-  kind: "pung" | "kong" | "chow";
+  kind: "pung" | "kong";
   tiles: Tile[];
 }
 
@@ -170,28 +170,6 @@ function ago(ms: number): string {
 
 function countIn(tiles: Tile[], t: Tile) {
   return tiles.filter((x) => x === t).length;
-}
-
-const SUIT_OF = (t: Tile) =>
-  "btc".includes(t[0]) && t.length === 2 ? t[0] : null;
-
-/** Pairs of rack tiles that complete a sequence with the given tile. */
-function chowOptions(rack: Tile[], tile: Tile): Tile[][] {
-  const suit = SUIT_OF(tile);
-  if (!suit) return [];
-  const rank = Number(tile.slice(1));
-  const have = (r: number) => rack.includes(`${suit}${r}` as Tile);
-  const out: Tile[][] = [];
-  for (const [a, b] of [
-    [rank - 2, rank - 1],
-    [rank - 1, rank + 1],
-    [rank + 1, rank + 2],
-  ]) {
-    if (a >= 1 && b <= 9 && have(a) && have(b)) {
-      out.push([`${suit}${a}` as Tile, `${suit}${b}` as Tile]);
-    }
-  }
-  return out;
 }
 
 export default function App() {
@@ -533,7 +511,6 @@ export default function App() {
   const myJokers = countIn(myRack, "J");
   const canPung = !!w && myCopies + myJokers >= 2;
   const canKong = !!w && myCopies + myJokers >= 3;
-  const chows = w ? chowOptions(myRack, w.tile) : [];
   const iAmNext = !!w && !!view && you === (w.from + 1) % view.seats.length;
   const myClaim = w?.claims.find((cl) => cl.seat === you);
   const iPassed = !!w && w.passed.includes(you);
@@ -798,18 +775,6 @@ export default function App() {
                             Kong
                           </button>
                         )}
-                        {windowTile !== "J" &&
-                          iAmNext &&
-                          chows.map((pair, ci) => (
-                            <button
-                              key={ci}
-                              onClick={() =>
-                                send("claim", { kind: "chow", tiles: pair })
-                              }
-                            >
-                              Chow {pair.map(tileLabel).join(" ")}
-                            </button>
-                          ))}
                         {windowTile !== "J" && (
                           <button
                             onClick={() => send("claim", { kind: "mahjong" })}
