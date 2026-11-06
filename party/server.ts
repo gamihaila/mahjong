@@ -9,6 +9,8 @@ import {
   type BotCommand,
   type BotView,
 } from "./bot";
+import { keyOk } from "./registry";
+export { RoomRegistry } from "./registry";
 
 // The room actor, on PartyServer (the PartyKit successor: same Durable
 // Object actor model, deployed with wrangler to our own Cloudflare
@@ -125,6 +127,16 @@ interface PlayState {
   winInfo: WinInfo | null;
 }
 
+/** One entry of a hand's replay recording: an applied command
+ *  (seat >= 0) or an alarm-driven transition (seat -1). Together
+ *  with the deal snapshot this is everything a step-through
+ *  replay needs to re-fold the hand later: the commands are the
+ *  fold's input, the snapshot its initial state. */
+interface ReplayEntry {
+  seat: number;
+  cmd: Partial<Command> & { type: string };
+}
+
 interface GameState {
   phase: Phase;
   seats: Seat[];
@@ -135,6 +147,11 @@ interface GameState {
   version: number;
   log: GameEvent[];
   processedIds: string[];
+  /** The deal that opened the current hand: every seat's rack
+   *  and the wall, in order, as dealt. Null outside a hand. */
+  deal: { hands: Tile[][]; wall: Tile[] } | null;
+  /** Applied commands of the current hand, in order. */
+  replay: ReplayEntry[];
 }
 
 interface Command {
@@ -153,6 +170,8 @@ interface Command {
 
 interface Env {
   Mahjong: DurableObjectNamespace<Mahjong>;
+  Registry?: DurableObjectNamespace<import("./registry").RoomRegistry>;
+  ADMIN_KEY?: string;
 }
 
 const MAX_SEATS = 4;
@@ -231,6 +250,8 @@ function freshState(): GameState {
     version: 0,
     log: [],
     processedIds: [],
+    deal: null,
+    replay: [],
   };
 }
 
@@ -290,6 +311,10 @@ export class Mahjong extends Server<Env> {
     } else if (saved) {
       await this.ctx.storage.delete("state");
     }
+    // Rooms persisted before the replay recording have neither
+    // field; normalize rather than wedge them.
+    if (!Array.isArray(this.state.replay)) this.state.replay = [];
+    if (this.state.deal === undefined) this.state.deal = null;
     // Restore the bots' pending cues WITH their original due
     // times. The queue used to live only in memory, so every
     // wake re-delayed each cue by a fresh human-pace delay — and
@@ -305,11 +330,77 @@ export class Mahjong extends Server<Env> {
     if (Array.isArray(savedQueue)) {
       this.botQueue = new Map(savedQueue);
     }
+    await this.noteRegistry();
     await this.driveBots();
   }
 
   async persist() {
     await this.ctx.storage.put("state", this.state);
+    await this.noteRegistry();
+  }
+
+  /** The last room summary reported to the registry, so persist()
+   *  can stay silent while nothing it tracks has changed. */
+  lastReg = "";
+
+  /** Tell the room registry this room exists and what it looks
+   *  like now, so the admin page can list it. Bookkeeping must
+   *  never break a game, so every failure — no binding (the test
+   *  harness), registry hiccup, whatever — is swallowed, and the
+   *  call costs nothing while the summary is unchanged. */
+  async noteRegistry() {
+    try {
+      const reg = this.env.Registry;
+      if (!reg) return;
+      const s = this.state;
+      const humans = s.seats.filter((seat) => !seat.bot).length;
+      const summary = `${s.phase}|${s.seats.length}|${humans}`;
+      if (summary === this.lastReg) return;
+      this.lastReg = summary;
+      const stub = reg.get(reg.idFromName("registry"));
+      await stub.fetch("https://registry/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "register",
+          room: this.ctx.id.name ?? "unknown",
+          seats: s.seats.length,
+          humans,
+          phase: s.phase,
+        }),
+      });
+    } catch {
+      /* the registry is bookkeeping; never break a game for it */
+    }
+  }
+
+  /** The admin page's big red button: erase this room completely
+   *  — saved state, pending bot cues, the alarm — and take it off
+   *  the registry's list. Key-gated in onRequest; no undo. */
+  async wipeRoom() {
+    await this.ctx.storage.deleteAll();
+    await this.ctx.storage.deleteAlarm();
+    this.state = freshState();
+    this.botQueue = new Map();
+    this.botAttempts = new Map();
+    this.lastReg = "";
+    try {
+      const reg = this.env.Registry;
+      if (reg) {
+        const stub = reg.get(reg.idFromName("registry"));
+        await stub.fetch("https://registry/", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            action: "forget",
+            room: this.ctx.id.name ?? "unknown",
+            key: this.env.ADMIN_KEY,
+          }),
+        });
+      }
+    } catch {
+      /* a stale registry row is cosmetic, not a failed wipe */
+    }
   }
 
   /** The redacted projection for one seat. This is the ONLY game data
@@ -320,6 +411,14 @@ export class Mahjong extends Server<Env> {
    *  escrowed draw, and escrowed passes are never in any view. */
   viewFor(seatIdx: number) {
     const s = this.state;
+    // Post-hand, secrecy ends: the view carries every seat's final
+    // rack and the hand's own slice of the event log (from its
+    // deal onward), so the table can review how the hand went.
+    // Mid-hand, neither exists in any view — the recording (deal
+    // snapshot + applied commands) stays server-side too, kept
+    // for a future step-through replay.
+    const over = s.phase === "over";
+    const logCut = over ? s.log.map((e) => e.type).lastIndexOf("start") : -1;
     const c = s.phase === "charleston" ? s.charleston : null;
     const p = s.play;
     const myPass = c && seatIdx >= 0 ? c.passes[seatIdx] : null;
@@ -378,6 +477,8 @@ export class Mahjong extends Server<Env> {
             winInfo: p.winInfo,
           }
         : null,
+      finalHands: over ? s.hands.map((h) => sortTiles(h)) : undefined,
+      history: over ? (logCut >= 0 ? s.log.slice(logCut) : s.log) : undefined,
     };
   }
 
@@ -489,6 +590,7 @@ export class Mahjong extends Server<Env> {
       cmd?: Command;
       since?: number;
       sig?: string;
+      key?: string;
     };
     try {
       body = (await req.json()) as typeof body;
@@ -497,6 +599,18 @@ export class Mahjong extends Server<Env> {
         { type: "error", error: "bad-request" },
         { status: 400 }
       );
+    }
+    if (body.action === "admin-wipe") {
+      // Not a game action: no seat token, and it must work on a
+      // room in any phase — that is rather the point of it.
+      if (!keyOk(this.env, body.key)) {
+        return Response.json(
+          { type: "error", error: "bad-key" },
+          { status: 403 }
+        );
+      }
+      await this.wipeRoom();
+      return Response.json({ type: "wiped" });
     }
     if (body.action === "join") {
       const res = await this.joinSeat(body.name ?? "Player", body.token ?? "");
@@ -717,6 +831,14 @@ export class Mahjong extends Server<Env> {
   async onAlarm() {
     const w = this.state.play?.window;
     if (w?.escrow && Date.now() >= w.escrow.deadline) {
+      // An alarm-driven transition: record it, or a replay fold
+      // would wait forever for a command that never comes.
+      if (this.state.deal) {
+        this.state.replay.push({
+          seat: -1,
+          cmd: { type: "__escrow-expired" },
+        });
+      }
       await this.resolveWindow();
     }
     await this.runDueBots();
@@ -808,6 +930,9 @@ export class Mahjong extends Server<Env> {
       s.phase = "charleston";
       s.charleston = freshCharleston(s.seats.length);
       s.play = null;
+      // Open the hand's replay recording with its initial state.
+      s.deal = { hands: s.hands.map((h) => [...h]), wall: [...s.wall] };
+      s.replay = [];
       this.appendEvent("start", seatIdx, `${s.seats.length} players`);
       applied = true;
     } else if (cmd.type === "pass" && s.phase === "charleston" && s.charleston) {
@@ -1121,12 +1246,32 @@ export class Mahjong extends Server<Env> {
         s.wall = [];
         s.charleston = null;
         s.play = null;
+        s.deal = null;
+        s.replay = [];
         this.appendEvent("reset", seatIdx);
         applied = true;
       }
     }
 
     if (applied) {
+      // The hand's replay recording: every applied command of the
+      // hand, in order, minus the delivery plumbing (id, base
+      // version). Lobby bookkeeping before the deal is not part
+      // of the hand; the start command itself opens the stream
+      // (its branch just reset it), and a reset closes it by
+      // clearing the snapshot, so it is never recorded.
+      if (s.deal && cmd.type !== "reset") {
+        const core: Partial<Command> & { type: string } = { type: cmd.type };
+        if (cmd.tiles) core.tiles = [...cmd.tiles];
+        if (cmd.tile) core.tile = cmd.tile;
+        if (cmd.blind !== undefined) core.blind = cmd.blind;
+        if (cmd.agree !== undefined) core.agree = cmd.agree;
+        if (cmd.kind) core.kind = cmd.kind;
+        if (cmd.owner !== undefined) core.owner = cmd.owner;
+        if (cmd.meld !== undefined) core.meld = cmd.meld;
+        if (cmd.seat !== undefined) core.seat = cmd.seat;
+        s.replay.push({ seat: seatIdx, cmd: core });
+      }
       s.version++;
       s.processedIds.push(cmd.id);
       if (s.processedIds.length > PROCESSED_CAP) {
