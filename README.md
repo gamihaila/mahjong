@@ -5,7 +5,6 @@ browser: big readable tiles, no accounts, no install. Name a room,
 share the name, and whoever shows up takes a seat — bots fill the
 empty ones.
 
-**Play it:** https://mahjong.george-mihaila-651.workers.dev
 
 ## The game
 
