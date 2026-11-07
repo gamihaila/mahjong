@@ -1,4 +1,4 @@
-# mahjong
+# American Mahjong
 
 American Mahjong for four players, built to be played from a phone
 browser: big readable tiles, no accounts, no install. Name a room,
