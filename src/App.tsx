@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { tileLabel, type Tile } from "./tiles";
+import {
+  SLOT_COUNT,
+  clickMove,
+  compactSlots,
+  displaySlots,
+  foldSlots,
+  type RackSlot,
+} from "./slots";
 import { TileSvg, TileBackSvg } from "./TileSvg";
 import Drills from "./Drills";
 
@@ -173,109 +181,52 @@ function countIn(tiles: Tile[], t: Tile) {
 }
 
 
-// ---- rack arrangement (client-side only) ----
-// The order you keep your tiles in — and the spaces between groups —
-// is presentation, never game state: nothing here is sent to the
-// server, enters the event log, or shows up in a replay. The layout
-// is a preference list of tile instances plus gap markers, matched
-// against each fresh view by tile identity (tiles of a kind are
-// fungible, so the match is by count). Tiles that leave drop out;
-// tiles that arrive append at the end. Selection state keeps
-// speaking in the server's own rack indices; display entries carry
+// ---- the rack is a slot board (client-side only) ----
+// Your rack is 24 fixed slots in three rows of eight (src/slots.ts,
+// shared with the drill room's Move lab). Which slot a tile sits in
+// — and which slots you leave empty between groups — is
+// presentation, never game state: nothing here is sent to the
+// server, enters the event log, or shows up in a replay. The board
+// persists per room in localStorage as 24 entries, tile or null,
+// and is folded into each fresh view by tile identity (tiles of a
+// kind are fungible, so the match is by count): a tile that leaves
+// empties its slot; a tile that arrives goes just past your last
+// tile, never inside a group you spaced out. Selection state keeps
+// speaking in the server's own rack indices; display cells carry
 // the server index (baseIdx) back to the click handlers.
-type RackItem =
-  | { kind: "tile"; id: number; tile: Tile }
-  | { kind: "gap"; id: number };
-
-type RackDisplayEntry =
-  | { tile: Tile; baseIdx: number; id: number }
-  | { gap: true };
-
 let rackIdSeq = 1;
 
-function loadRackItems(roomName: string): RackItem[] {
+function loadRackSlots(roomName: string): (RackSlot | null)[] {
+  const blank = (): (RackSlot | null)[] =>
+    Array.from({ length: SLOT_COUNT }, () => null);
   try {
     const raw = localStorage.getItem(`mj-rack-${roomName}`);
-    if (!raw) return [];
-    const arr = JSON.parse(raw) as (Tile | "GAP")[];
-    if (!Array.isArray(arr)) return [];
-    return arr.map((x) =>
-      x === "GAP"
-        ? { kind: "gap", id: rackIdSeq++ }
-        : { kind: "tile", id: rackIdSeq++, tile: x }
-    );
+    if (!raw) return blank();
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return blank();
+    const slots = blank();
+    if (arr.some((x) => x === null)) {
+      // Current format: 24 entries, tile or null.
+      arr.slice(0, SLOT_COUNT).forEach((x, i) => {
+        if (typeof x === "string")
+          slots[i] = { id: rackIdSeq++, tile: x as Tile };
+      });
+      return slots;
+    }
+    // Legacy format (the PR #42 board): a list of tiles and "GAP"
+    // markers. Translate positionally — each entry, gap markers
+    // included, takes the next slot.
+    let i = 0;
+    for (const x of arr) {
+      if (i >= SLOT_COUNT) break;
+      if (x !== "GAP" && typeof x === "string")
+        slots[i] = { id: rackIdSeq++, tile: x as Tile };
+      i++;
+    }
+    return slots;
   } catch {
-    return [];
+    return blank();
   }
-}
-
-// Fold the preference list into the rack the server reports: drop
-// tiles that are gone, append tiles that are new (in server order),
-// and prune gaps that would lead, trail or double up.
-function rackCommit(items: RackItem[], base: Tile[]): RackItem[] {
-  const counts = new Map<Tile, number>();
-  base.forEach((t) => counts.set(t, (counts.get(t) ?? 0) + 1));
-  const kept: RackItem[] = [];
-  for (const it of items) {
-    if (it.kind === "gap") {
-      kept.push(it);
-      continue;
-    }
-    const n = counts.get(it.tile) ?? 0;
-    if (n > 0) {
-      counts.set(it.tile, n - 1);
-      kept.push(it);
-    }
-  }
-  base.forEach((t) => {
-    const n = counts.get(t) ?? 0;
-    if (n > 0) {
-      counts.set(t, n - 1);
-      kept.push({ kind: "tile", id: rackIdSeq++, tile: t });
-    }
-  });
-  const out: RackItem[] = [];
-  for (const it of kept) {
-    if (
-      it.kind === "gap" &&
-      (out.length === 0 || out[out.length - 1].kind === "gap")
-    )
-      continue;
-    out.push(it);
-  }
-  while (out.length > 0 && out[out.length - 1].kind === "gap") out.pop();
-  return out;
-}
-
-// Produce the display list for the current view: preference order,
-// each tile annotated with its index in the server's rack order.
-function rackDisplay(items: RackItem[], base: Tile[]): RackDisplayEntry[] {
-  const queues = new Map<Tile, number[]>();
-  base.forEach((t, i) => {
-    const q = queues.get(t);
-    if (q) q.push(i);
-    else queues.set(t, [i]);
-  });
-  const used = new Set<number>();
-  const out: RackDisplayEntry[] = [];
-  for (const it of items) {
-    if (it.kind === "gap") {
-      if (out.length > 0 && !("gap" in out[out.length - 1]))
-        out.push({ gap: true });
-      continue;
-    }
-    const q = queues.get(it.tile);
-    if (q && q.length > 0) {
-      const baseIdx = q.shift()!;
-      used.add(baseIdx);
-      out.push({ tile: it.tile, baseIdx, id: it.id });
-    }
-  }
-  base.forEach((t, i) => {
-    if (!used.has(i)) out.push({ tile: t, baseIdx: i, id: -1 - i });
-  });
-  while (out.length > 0 && "gap" in out[out.length - 1]) out.pop();
-  return out;
 }
 
 export default function App() {
@@ -298,13 +249,13 @@ export default function App() {
   const [touched, setTouched] = useState(false);
   // Play loop: the rack index selected to discard.
   const [discardIdx, setDiscardIdx] = useState<number | null>(null);
-  // Rack arrangement: preference list, the arrange-mode toggle, and
-  // the entry currently picked up in arrange mode.
-  const [rackItems, setRackItems] = useState<RackItem[]>(() =>
-    loadRackItems(room)
+  // The slot board: the rack's 24 slots, the arrange-mode toggle,
+  // and the slot currently picked up in arrange mode.
+  const [rackSlots, setRackSlots] = useState<(RackSlot | null)[]>(() =>
+    loadRackSlots(room)
   );
   const [arranging, setArranging] = useState(false);
-  const [arrangeId, setArrangeId] = useState<number | null>(null);
+  const [pickedSlot, setPickedSlot] = useState<number | null>(null);
 
   const tokenRef = useRef("");
   const viewRef = useRef<View | null>(null);
@@ -341,26 +292,21 @@ export default function App() {
   const rackSig = rackBase.join(",");
   useEffect(() => {
     if (!view || view.phase === "lobby" || rackBase.length === 0) return;
-    setRackItems((prev) => {
-      const next = rackCommit(prev, rackBase);
-      return next.length === prev.length &&
-        next.every((x, i) => x === prev[i])
-        ? prev
-        : next;
+    setRackSlots((prev) => {
+      const next = foldSlots(prev, rackBase, () => rackIdSeq++);
+      return next.every((x, i) => x === prev[i]) ? prev : next;
     });
   }, [rackSig, view?.phase]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     try {
       localStorage.setItem(
         `mj-rack-${room}`,
-        JSON.stringify(
-          rackItems.map((it) => (it.kind === "gap" ? "GAP" : it.tile))
-        )
+        JSON.stringify(rackSlots.map((e) => (e ? e.tile : null)))
       );
     } catch {
-      // storage unavailable: the arrangement just won't persist
+      // storage unavailable: the board just won't persist
     }
-  }, [rackItems, room]);
+  }, [rackSlots, room]);
 
   // ---- transport: HTTP request/response + polling ----
   // There is no socket. Every request carries the seat token and
@@ -641,34 +587,22 @@ export default function App() {
     });
   }
 
-  // Arrange mode: swap the picked-up entry with its neighbour (a
-  // tile or a gap — swapping with a gap moves the tile across the
-  // group boundary), and toggle a gap immediately before it.
-  function moveRackItem(dir: -1 | 1) {
-    if (arrangeId === null) return;
-    setRackItems((prev) => {
-      const i = prev.findIndex((it) => it.id === arrangeId);
-      const j = i + dir;
-      if (i < 0 || j < 0 || j >= prev.length) return prev;
-      const next = [...prev];
-      const tmp = next[i];
-      next[i] = next[j];
-      next[j] = tmp;
-      return next;
-    });
-  }
-
-  function toggleRackGap() {
-    if (arrangeId === null) return;
-    setRackItems((prev) => {
-      const i = prev.findIndex((it) => it.id === arrangeId);
-      if (i < 0) return prev;
-      if (i > 0 && prev[i - 1].kind === "gap")
-        return prev.filter((_, x) => x !== i - 1);
-      const next = [...prev];
-      next.splice(i, 0, { kind: "gap", id: rackIdSeq++ });
-      return next;
-    });
+  // Arrange mode: two taps, the Move lab's rule. Tap a tile to
+  // pick it up; tap the tile it should displace (its neighbours
+  // shift to make room) or an empty slot to simply move it there;
+  // tap the picked tile again to put it down.
+  function tapSlot(i: number) {
+    if (pickedSlot === null) {
+      if (rackSlots[i]) setPickedSlot(i);
+      return;
+    }
+    if (i === pickedSlot) {
+      setPickedSlot(null);
+      return;
+    }
+    const next = clickMove(rackSlots, pickedSlot, i);
+    if (next !== rackSlots) setRackSlots(next);
+    setPickedSlot(null);
   }
 
   function submitPass() {
@@ -1089,26 +1023,43 @@ export default function App() {
       {view && view.phase !== "lobby" && (
         <section className="rack">
           <h2>Your tiles</h2>
-          <div className="tiles">
-            {rackDisplay(
-              rackItems,
-              view.phase === "charleston" ? rackTiles : view.yourTiles
-            ).map((d, di) =>
-              "gap" in d ? (
-                <span key={`gap-${di}`} className="rackgap" />
+          <div className={"rack-grid" + (arranging ? " arranging" : "")}>
+            {displaySlots(
+              rackSlots,
+              view.phase === "charleston" ? rackTiles : view.yourTiles,
+              (w?.youEscrowed ? 1 : 0) +
+                (view.phase === "charleston" ? blindCount : 0)
+            ).map((cell, i) =>
+              cell.kind === "facedown" ? (
+                <span key={`s-${i}`} className="tile facedown">
+                  <TileBackSvg />
+                </span>
+              ) : cell.kind === "empty" ? (
+                arranging ? (
+                  <button
+                    key={`s-${i}`}
+                    type="button"
+                    className="slotempty"
+                    aria-label="Empty slot"
+                    onClick={() => tapSlot(i)}
+                  />
+                ) : (
+                  <span key={`s-${i}`} className="slotempty" />
+                )
               ) : (
                 <button
-                  key={d.id}
+                  key={`t-${cell.id}`}
                   className={
                     "tile" +
                     (view.phase === "charleston" &&
-                    d.baseIdx >= view.yourTiles.length
+                    cell.baseIdx >= view.yourTiles.length
                       ? " passed"
                       : "") +
-                    (selected.includes(d.baseIdx) || discardIdx === d.baseIdx
+                    (selected.includes(cell.baseIdx) ||
+                    discardIdx === cell.baseIdx
                       ? " selected"
                       : "") +
-                    (arranging && arrangeId === d.id ? " arranging" : "")
+                    (arranging && pickedSlot === i ? " arranging" : "")
                   }
                   disabled={
                     arranging
@@ -1118,23 +1069,19 @@ export default function App() {
                         : !mustDiscard
                   }
                   onClick={() => {
-                    if (arranging) setArrangeId(d.id);
-                    else if (view.phase === "charleston") toggleTile(d.baseIdx);
+                    if (arranging) tapSlot(i);
+                    else if (view.phase === "charleston")
+                      toggleTile(cell.baseIdx);
                     else if (mustDiscard)
                       setDiscardIdx(
-                        discardIdx === d.baseIdx ? null : d.baseIdx
+                        discardIdx === cell.baseIdx ? null : cell.baseIdx
                       );
                   }}
                 >
-                  <TileSvg tile={d.tile} />
+                  <TileSvg tile={cell.tile} />
                 </button>
               )
             )}
-            {w?.youEscrowed && <span className="tile facedown"><TileBackSvg /></span>}
-            {view.phase === "charleston" &&
-              Array.from({ length: blindCount }, (_, i) => (
-                <span key={`blind-${i}`} className="tile facedown"><TileBackSvg /></span>
-              ))}
           </div>
           {(view.phase === "charleston" || view.phase === "playing") && (
             <div className="arrangebar">
@@ -1142,7 +1089,7 @@ export default function App() {
                 className="quiet"
                 onClick={() => {
                   setArranging(!arranging);
-                  setArrangeId(null);
+                  setPickedSlot(null);
                 }}
               >
                 {arranging ? "Done arranging" : "Arrange tiles"}
@@ -1150,26 +1097,17 @@ export default function App() {
               {arranging && (
                 <>
                   <button
-                    disabled={arrangeId === null}
-                    onClick={() => moveRackItem(-1)}
+                    onClick={() => {
+                      setRackSlots(compactSlots(rackSlots));
+                      setPickedSlot(null);
+                    }}
                   >
-                    ◀ Move
-                  </button>
-                  <button
-                    disabled={arrangeId === null}
-                    onClick={() => moveRackItem(1)}
-                  >
-                    Move ▶
-                  </button>
-                  <button
-                    disabled={arrangeId === null}
-                    onClick={toggleRackGap}
-                  >
-                    Space before
+                    Compact
                   </button>
                   <span className="blind-hint">
-                    Tap a tile to pick it up. Your order and spaces are
-                    yours alone — they never leave this device.
+                    {pickedSlot !== null && rackSlots[pickedSlot]
+                      ? "Tap the tile it should displace, an empty slot to move it there, or the tile itself to put it down."
+                      : "Tap a tile to pick it up, then tap where it goes. Compact closes the gaps without reordering. Your slots are yours alone \u2014 they never leave this device."}
                   </span>
                 </>
               )}

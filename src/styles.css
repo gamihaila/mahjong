@@ -211,9 +211,17 @@ button.tile:hover { background: linear-gradient(180deg, #fffdf5, #f1ead2); }
   height: auto;
   aspect-ratio: 62 / 88;
 }
+/* The live rack is a slot board: 24 fixed positions, three rows
+   of eight, tracks that always fit the screen (the Move lab's
+   lesson). Empty slots are nearly invisible during play and get
+   their dashed outlines in arrange mode. */
+.rack-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; }
+.rack-grid .tile { width: 100%; height: auto; aspect-ratio: 62 / 88; min-width: 0; padding: 2px; }
+.slotempty { aspect-ratio: 62 / 88; border: 1.5px dashed transparent; border-radius: 8px; background: transparent; padding: 0; }
+.rack-grid.arranging .slotempty { border-color: rgba(255, 255, 255, 0.35); background: rgba(255, 255, 255, 0.05); }
+button.slotempty { cursor: pointer; }
 .passbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .arrangebar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.rackgap { flex: 0 0 16px; }
 .tile.arranging { outline: 3px solid #d97706; outline-offset: 1px; }
 .blind-hint { font-size: 13.5px; opacity: 0.75; font-style: italic; }
 

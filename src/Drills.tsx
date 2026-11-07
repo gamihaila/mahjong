@@ -2,6 +2,7 @@ import { useState } from "react";
 import { CARD_2026, bestHands, type CardHand, type HandEval } from "./card";
 import { buildWall, shuffle, sortTiles, tileLabel, type Tile } from "./tiles";
 import { TileSvg, TileBackSvg } from "./TileSvg";
+import { clickMove } from "./slots";
 import { decideCharlestonPass, type BotView } from "../party/bot";
 
 // The drill room: solo practice, no server, no stakes. Everything
@@ -570,40 +571,6 @@ interface LabTile {
 type Slot = LabTile | null;
 
 const LAB_SLOTS = 24;
-
-/** Move slots[s] so it lands at slots[t], George's rule: the
- *  tiles from t on shift one slot right into the nearest empty
- *  slot to make room (if there is no empty slot to the right,
- *  the tiles shift left into the nearest one on that side
- *  instead). Tapping an empty t is a plain move. Anything else —
- *  same slot, empty source — returns the rack unchanged. */
-function clickMove(slots: Slot[], s: number, t: number): Slot[] {
-  if (s === t || s < 0 || t < 0 || s >= slots.length || t >= slots.length)
-    return slots;
-  const held = slots[s];
-  if (held === null) return slots;
-  const next = [...slots];
-  next[s] = null;
-  if (slots[t] === null) {
-    next[t] = held;
-    return next;
-  }
-  for (let e = t + 1; e < next.length; e++) {
-    if (next[e] === null) {
-      for (let i = e; i > t; i--) next[i] = next[i - 1];
-      next[t] = held;
-      return next;
-    }
-  }
-  for (let l = t - 1; l >= 0; l--) {
-    if (next[l] === null) {
-      for (let i = l; i < t; i++) next[i] = next[i + 1];
-      next[t] = held;
-      return next;
-    }
-  }
-  return slots;
-}
 
 function withIds(tiles: Tile[]): LabTile[] {
   const seen = new Map<Tile, number>();
