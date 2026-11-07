@@ -248,3 +248,32 @@ server index back to the click handlers. Arranging happens in
 an explicit mode (tap a tile to pick it up, move it, give it a
 space before it) so an arranging tap can never discard a tile
 or compose a pass by accident.
+
+## The rack is a slot board (2026-11-07)
+
+The preference list above served for a day; two prototypes in
+the drill room (a drag lab, then George's click-to-move Move
+lab) settled the better model, and the live rack adopted it.
+The rack is now a fixed board of 24 slots in three rows of
+eight (src/slots.ts, shared verbatim with the Move lab, so the
+game and the lab can never drift apart). A space between
+groups is an empty slot — a position, not a marker attached to
+a tile. Arranging is still an explicit mode, but the Move and
+Space-before buttons are gone: tap a tile to pick it up, tap
+the tile it should displace (neighbours shift toward the
+nearest empty slot to make room) or an empty slot to move it
+there, tap it again to put it down. A Compact button closes
+the gaps without reordering — deliberately not a sort, since a
+player's grouping may be strategic.
+
+The fold rules changed with the model. A tile that leaves
+empties its slot and its neighbours stay put; a tile that
+arrives is placed in the first empty slot past your last tile,
+never inside a group you spaced out (falling back to the first
+empty slot anywhere). Storage is 24 entries, tile or null; the
+old tile/GAP lists translate positionally on first load. The
+board still fits the screen by construction (eight
+shrinkable tracks), and it is slightly shorter than the
+wrapped flex rack it replaces. Everything from the section
+above still holds: presentation only, per-room localStorage,
+selection in server indices via each cell's baseIdx.
