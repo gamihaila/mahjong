@@ -274,6 +274,14 @@ button.slotempty { cursor: pointer; }
 .candidate:hover { background: #fffbeb; }
 .card-line { font-family: "Courier New", monospace; font-weight: 700; font-size: 20px; letter-spacing: .05em; display: flex; flex-wrap: wrap; gap: 2px 12px; }
 .card-line .grp { white-space: nowrap; }
+
+/* ---- closest-hand hint (live game) ---- */
+.hintbar { background: #fffdf8; color: #1c1917; border: 1px solid #d6cdbb; border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; }
+.hint-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; }
+.hint-hand .cand-head { display: flex; justify-content: space-between; font-weight: 700; margin-bottom: 6px; }
+.hint-hand .cand-note { display: block; margin-top: 6px; font-size: 13px; opacity: 0.8; }
+.hint-none { margin: 0; }
+.hintbar .card-line { font-size: 18px; }
 .tile.coach { outline: 3px solid #2563eb; outline-offset: 1px; }
 .why { margin: 4px 0 8px; padding-left: 20px; }
 .why li { margin: 3px 0; }
