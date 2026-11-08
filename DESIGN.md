@@ -303,3 +303,13 @@ exactly what your client already knows.
   default off), remembered on the device. One player's hint never
   appears on another's screen; the day a player outgrows it, they
   switch it off and play unaided.
+
+Hotfix the same evening (PR #49): as first shipped, the hint's
+`useMemo` sat below the join screen's early return, so the hook
+first ran on the render AFTER joining — React's "rendered more
+hooks than during the previous render" — and every successful join
+blanked the page (the join screen and the drill room were fine,
+which is what made it slippery). The computation now lives with
+the other hooks, above the early return, and the inputs are
+derived from the view directly. Verified in a headless browser:
+join, deal, Charleston, hint on — no errors.
