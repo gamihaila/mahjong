@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { CARD_2026, bestHands, type CardHand, type HandEval } from "./card";
+import { CardLine } from "./CardLine";
 import { buildWall, shuffle, sortTiles, tileLabel, type Tile } from "./tiles";
 import { TileSvg, TileBackSvg } from "./TileSvg";
 import { clickMove } from "./slots";
@@ -58,32 +59,6 @@ function shuffled<T>(arr: T[]): T[] {
 function deal13(): { rack: Tile[]; rest: Tile[] } {
   const wall = shuffle(buildWall());
   return { rack: sortTiles(wall.slice(0, 13)), rest: wall.slice(13) };
-}
-
-/** A hand printed the way the card prints it: the group tokens in
- *  their slot colors, at reading size. (Rendered as miniature tiles
- *  at first — too small to read on a phone.) Colors match the card
- *  reference page exactly. */
-const SLOT_COLORS: Record<string, string> = {
-  b: "#1e40af",
-  g: "#15803d",
-  r: "#b91c1c",
-};
-
-function CardLine({ hand }: { hand: CardHand }) {
-  return (
-    <span className="card-line">
-      {hand.groups.map((g, i) => (
-        <span
-          key={i}
-          className="grp"
-          style={{ color: SLOT_COLORS[g.color] ?? "inherit" }}
-        >
-          {g.token}
-        </span>
-      ))}
-    </span>
-  );
 }
 
 function handTitle(e: HandEval): string {
