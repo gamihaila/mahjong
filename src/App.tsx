@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { tileLabel, type Tile } from "./tiles";
 import {
   SLOT_COUNT,
@@ -9,6 +9,8 @@ import {
   type RackSlot,
 } from "./slots";
 import { TileSvg, TileBackSvg } from "./TileSvg";
+import { CARD_2026, bestHands, type HandEval } from "./card";
+import { CardLine } from "./CardLine";
 import Drills from "./Drills";
 
 // Client for slices 1-3: connect to a room, take (or reclaim) a seat,
@@ -256,6 +258,23 @@ export default function App() {
   );
   const [arranging, setArranging] = useState(false);
   const [pickedSlot, setPickedSlot] = useState<number | null>(null);
+  // Closest-hand hint: a per-device learning aid (see the render).
+  const [hintOn, setHintOn] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("mj-hint") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [hintOpen, setHintOpen] = useState(false);
+  const setHint = (v: boolean) => {
+    setHintOn(v);
+    try {
+      localStorage.setItem("mj-hint", v ? "1" : "0");
+    } catch {
+      // storage unavailable: the choice just won't persist
+    }
+  };
 
   const tokenRef = useRef("");
   const viewRef = useRef<View | null>(null);
@@ -637,6 +656,31 @@ export default function App() {
       })
     );
   }
+
+  // ---- beginner hint: the closest card hand, computed locally ----
+  // The evaluator the bots and the drill-room coach use, run on the
+  // redacted view this client already holds: your tiles and your own
+  // melds, nothing else. During the Charleston it scores the tiles
+  // you would KEEP — the combined rack minus the pass you have
+  // picked — so it moves as you compose the pass. Nothing is sent
+  // anywhere and no other seat's screen is affected.
+  const hintTiles: Tile[] =
+    view?.phase === "charleston"
+      ? rackTiles.filter((_, i) => !selected.includes(i))
+      : myRack;
+  const hintMelds: MeldView[] =
+    view?.phase === "playing" && p ? (p.melds[you] ?? []) : [];
+  const hintSig =
+    hintTiles.join(",") +
+    "|" +
+    hintMelds.map((m) => m.tiles.join("")).join("|");
+  const hintEvals: HandEval[] = useMemo(
+    () =>
+      hintOn && (view?.phase === "charleston" || view?.phase === "playing")
+        ? bestHands(CARD_2026, hintTiles, hintMelds, 3)
+        : [],
+    [hintOn, hintSig, view?.phase] // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   return (
     <div className="app">
@@ -1137,7 +1181,71 @@ export default function App() {
               </button>
             </div>
           )}
-        </section>
+                  {(view.phase === "charleston" || view.phase === "playing") &&
+            (hintOn ? (
+              <div className="hintbar">
+                <div className="hint-head">
+                  <span>Closest hand · a learning aid, only on this device</span>
+                  <button
+                    type="button"
+                    className="quiet"
+                    onClick={() => setHint(false)}
+                  >
+                    Hide
+                  </button>
+                </div>
+                {hintEvals.length === 0 ? (
+                  <p className="hint-none">
+                    No hand on the card is reachable from this rack and
+                    your exposures — a fresh direction has to come from
+                    the wall.
+                  </p>
+                ) : (
+                  <>
+                    {(hintOpen ? hintEvals : hintEvals.slice(0, 1)).map(
+                      (e) => (
+                        <div key={e.hand.index} className="hint-hand">
+                          <span className="cand-head">
+                            <span>{e.hand.section}</span>
+                            <span>
+                              {e.missing === 0
+                                ? "complete!"
+                                : `${e.missing} away`}
+                            </span>
+                          </span>
+                          <CardLine hand={e.hand} />
+                          {e.hand.note && (
+                            <span className="cand-note">{e.hand.note}</span>
+                          )}
+                        </div>
+                      )
+                    )}
+                    {hintEvals.length > 1 && (
+                      <button
+                        type="button"
+                        className="quiet"
+                        onClick={() => setHintOpen(!hintOpen)}
+                      >
+                        {hintOpen
+                          ? "Show only the closest"
+                          : "Show the next two closest"}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="arrangebar">
+                <button
+                  type="button"
+                  className="quiet"
+                  onClick={() => setHint(true)}
+                >
+                  Show closest-hand hint
+                </button>
+              </div>
+            ))}
+</section>
       )}
     </div>
   );
