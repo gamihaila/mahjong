@@ -327,6 +327,38 @@ export default function App() {
     }
   }, [rackSlots, room]);
 
+  // ---- beginner hint: the closest card hand, computed locally ----
+  // The evaluator the bots and the drill-room coach use, run on the
+  // redacted view this client already holds: your tiles and your own
+  // melds, nothing else. During the Charleston it scores the tiles
+  // you would KEEP — the combined rack minus the pass you have
+  // picked — so it moves as you compose the pass. Nothing is sent
+  // anywhere and no other seat's screen is affected. NOTE: this
+  // block lives with the other hooks, above the join screen's early
+  // return — a hook below that return first runs on the render
+  // after joining, which crashes React ("rendered more hooks than
+  // during the previous render"). That was PR #48's bug; the
+  // placement is the fix.
+  const hintTiles: Tile[] =
+    view?.phase === "charleston"
+      ? [...view.yourTiles, ...(c?.yourPass ?? [])].filter(
+          (_, i) => !selected.includes(i)
+        )
+      : (view?.yourTiles ?? []);
+  const hintMelds: MeldView[] =
+    view?.phase === "playing" && p ? (p.melds[you] ?? []) : [];
+  const hintSig =
+    hintTiles.join(",") +
+    "|" +
+    hintMelds.map((m) => m.tiles.join("")).join("|");
+  const hintEvals: HandEval[] = useMemo(
+    () =>
+      hintOn && (view?.phase === "charleston" || view?.phase === "playing")
+        ? bestHands(CARD_2026, hintTiles, hintMelds, 3)
+        : [],
+    [hintOn, hintSig, view?.phase] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
   // ---- transport: HTTP request/response + polling ----
   // There is no socket. Every request carries the seat token and
   // stands alone; a frozen, killed or reloaded page recovers with
@@ -656,31 +688,6 @@ export default function App() {
       })
     );
   }
-
-  // ---- beginner hint: the closest card hand, computed locally ----
-  // The evaluator the bots and the drill-room coach use, run on the
-  // redacted view this client already holds: your tiles and your own
-  // melds, nothing else. During the Charleston it scores the tiles
-  // you would KEEP — the combined rack minus the pass you have
-  // picked — so it moves as you compose the pass. Nothing is sent
-  // anywhere and no other seat's screen is affected.
-  const hintTiles: Tile[] =
-    view?.phase === "charleston"
-      ? rackTiles.filter((_, i) => !selected.includes(i))
-      : myRack;
-  const hintMelds: MeldView[] =
-    view?.phase === "playing" && p ? (p.melds[you] ?? []) : [];
-  const hintSig =
-    hintTiles.join(",") +
-    "|" +
-    hintMelds.map((m) => m.tiles.join("")).join("|");
-  const hintEvals: HandEval[] = useMemo(
-    () =>
-      hintOn && (view?.phase === "charleston" || view?.phase === "playing")
-        ? bestHands(CARD_2026, hintTiles, hintMelds, 3)
-        : [],
-    [hintOn, hintSig, view?.phase] // eslint-disable-line react-hooks/exhaustive-deps
-  );
 
   return (
     <div className="app">
