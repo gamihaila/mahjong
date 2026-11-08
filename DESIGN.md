@@ -277,3 +277,29 @@ shrinkable tracks), and it is slightly shorter than the
 wrapped flex rack it replaces. Everything from the section
 above still holds: presentation only, per-room localStorage,
 selection in server indices via each cell's baseIdx.
+
+## Beginner hint: the closest hand (2026-11-07)
+
+George's request: a learning aid — show the closest card hand at the
+bottom of the rack, so a beginner learns the card by playing instead
+of by studying it. It is the same evaluator the bots steer by and
+the drill room grades with (`bestHands` in src/card.ts), run
+entirely in the client on the redacted view: your tiles and your
+own melds, nothing else. Nothing is computed on the server, nothing
+is sent, and the redaction boundary is untouched — the hint knows
+exactly what your client already knows.
+
+- Presentation: a strip under the rack (Charleston and play),
+  printing the closest hand the way the card prints it (the shared
+  CardLine component, moved out of the drill room), its note, and
+  its distance; it expands to the next two candidates on request. A
+  distance of 0 reads "complete!"; when no hand is reachable — an
+  exposure that fits no group — the strip says so, which is itself
+  information a beginner can use.
+- Charleston semantics: it scores the tiles you would KEEP — the
+  combined rack minus the pass currently picked — so the hint moves
+  as you compose the pass, which is when a beginner most needs it.
+- It is a personal, per-device toggle (localStorage `mj-hint`,
+  default off), remembered on the device. One player's hint never
+  appears on another's screen; the day a player outgrows it, they
+  switch it off and play unaided.
