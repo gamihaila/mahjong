@@ -198,6 +198,34 @@ function countIn(tiles: Tile[], t: Tile) {
 // the server index (baseIdx) back to the click handlers.
 let rackIdSeq = 1;
 
+// A fresh room name for the join screen's dice button: two
+// words and a number — easy to read aloud to the other players
+// ("join amber-otter-37"), and with tens of thousands of
+// combinations, a room nobody has used yet, which is the point:
+// a fresh room has no ghost seats from old games, no week-old
+// claims, no hand in progress. (George's suggestion, 2026-11-11 —
+// the night his Nov 5 seat claim turned out to still be sitting
+// in Maria's game, playing East to an empty chair.)
+const ROOM_WORDS_A = [
+  "amber", "birch", "cedar", "clover", "coral", "crimson",
+  "ember", "gentle", "golden", "harbor", "hazel", "ivory",
+  "juniper", "linden", "maple", "merry", "onyx", "pearl",
+  "quiet", "rowan", "sable", "sunny", "velvet", "willow",
+];
+const ROOM_WORDS_B = [
+  "badger", "basket", "cobbler", "falcon", "garden", "heron",
+  "kettle", "lantern", "market", "meadow", "otter", "painter",
+  "picnic", "pocket", "quiver", "river", "saddle", "sparrow",
+  "timber", "tulip", "urchin", "violin", "walnut", "window",
+];
+
+function freshRoomName(): string {
+  const pick = (words: string[]) =>
+    words[Math.floor(Math.random() * words.length)];
+  const num = 10 + Math.floor(Math.random() * 90);
+  return `${pick(ROOM_WORDS_A)}-${pick(ROOM_WORDS_B)}-${num}`;
+}
+
 function loadRackSlots(roomName: string): (RackSlot | null)[] {
   const blank = (): (RackSlot | null)[] =>
     Array.from({ length: SLOT_COUNT }, () => null);
@@ -596,6 +624,13 @@ export default function App() {
             Room
             <input value={room} onChange={(e) => setRoom(e.target.value)} />
           </label>
+          <button
+            type="button"
+            className="quiet"
+            onClick={() => setRoom(freshRoomName())}
+          >
+            🎲 Fresh room name — a room nobody has used
+          </button>
           <label>
             Your name
             <input value={name} onChange={(e) => setName(e.target.value)} />
