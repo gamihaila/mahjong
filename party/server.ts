@@ -814,6 +814,19 @@ export class Mahjong extends Server<Env> {
     p.winKind = winKind;
     p.drawGame = drawGame;
     p.winInfo = winInfo;
+    // Settle an open window before the hand closes, or its
+    // tiles fall out of the accounting entirely: the live
+    // discard joins the dead discards, and an escrowed draw
+    // returns to the wall unseen — the settlement a mahjong
+    // claim makes inline. Callers that settle the window
+    // themselves (the mahjong claim, resolveWindow) null it
+    // first, so nothing here can settle twice. (The fuzz suite
+    // found the leak: a wall-exhausting draw into an open
+    // window ended the hand with 151 of 152 tiles accounted.)
+    if (p.window) {
+      if (p.window.escrow) s.wall.unshift(p.window.escrow.tile);
+      p.discards.push(p.window.tile);
+    }
     p.window = null;
     s.phase = "over";
     this.appendEvent(
@@ -852,6 +865,10 @@ export class Mahjong extends Server<Env> {
         p.hasDrawn = true;
       }
     }
+
+    // The window's outcome is decided from here on; null it so
+    // the kong-replacement endHand below cannot settle it twice.
+    p.window = null;
 
     if (winner) {
       const seat = winner.seat;
@@ -1058,6 +1075,12 @@ export class Mahjong extends Server<Env> {
           s.hands = [];
           s.wall = [];
           s.charleston = null;
+          // The hand is gone, so its recording goes with it —
+          // the deal snapshot is null outside a hand, as the
+          // reset path already keeps it. (The fuzz suite caught
+          // the snapshot lingering in the lobby after a void.)
+          s.deal = null;
+          s.replay = [];
           this.appendEvent("voided");
           this.noteDiag("void", seatIdx, "hand voided, back to the lobby");
         }
@@ -1161,6 +1184,7 @@ export class Mahjong extends Server<Env> {
           if (win) {
             s.hands[seatIdx].push(w.tile);
             if (w.escrow) s.wall.unshift(w.escrow.tile);
+            p.window = null; // settled just above; endHand must not settle it again
             this.appendEvent("claim", seatIdx, `mahjong on ${w.tile}`);
             this.endHand(seatIdx, "discard", false, win);
             applied = true;
