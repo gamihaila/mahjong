@@ -21,7 +21,8 @@
     "dev": "vite",
     "dev:party": "wrangler dev",
     "test:incarnation": "esbuild party/server.ts --bundle --format=esm --platform=node --alias:cloudflare:workers=./tests/stub-cloudflare-workers.mjs --outfile=tests/.build/server.mjs && node tests/incarnation.test.mjs",
-    "test:restart": "node tests/restart-smoke.mjs"
+    "test:restart": "node tests/restart-smoke.mjs",
+    "test:diag": "esbuild party/server.ts --bundle --format=esm --platform=node --alias:cloudflare:workers=./tests/stub-cloudflare-workers.mjs --outfile=tests/.build/server.mjs && node tests/diag.test.mjs"
   },
   "type": "module",
   "version": "0.1.0"
