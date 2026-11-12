@@ -313,3 +313,19 @@ which is what made it slippery). The computation now lives with
 the other hooks, above the early return, and the inputs are
 derived from the view directly. Verified in a headless browser:
 join, deal, Charleston, hint on — no errors.
+
+Room diagnostic log (2026-11-11, PR #51): the same evening's
+other lesson — when Maria's game went wrong, the room itself
+could tell us nothing; there was no record of who had claimed
+what or which commands had been refused. Each room now keeps a
+small persistent log in its own state (last 50 entries, oldest
+dropped): seats claimed and reclaimed by token, commands refused
+with a plain reason (stale base, pass tiles not in hand, blind
+pass on the wrong step, reset during a hand), deals, and void
+outcomes. It is read through the admin page (the admin-diag
+action, same key as the wipe) — no external service, no tiles or
+hands in the log, just the moments a player can get stuck. Bot
+refusals are deliberately not logged; a bot's refused retries are
+its driver's own bookkeeping and would crowd out the human
+signal. George's framing when he approved it: persistent logging
+for these situations, sized for a friendly game.
