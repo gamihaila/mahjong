@@ -347,3 +347,26 @@ refusals are deliberately not logged; a bot's refused retries are
 its driver's own bookkeeping and would crowd out the human
 signal. George's framing when he approved it: persistent logging
 for these situations, sized for a friendly game.
+
+Room names and the admin page (2026-11-11, PR #54): Maria's
+stuck room turned out to live under the name "Mihaila%20". A
+trailing space in the typed room name (autocorrect's usual
+gift) is encoded by the client into the URL path, and the
+PartyServer router takes that raw segment as the Durable
+Object's literal name — so the spaced and unspaced spellings
+are different rooms, and the registry faithfully listed the
+encoded one. The admin page then encoded the stored name a
+second time and cheerfully wiped a fresh phantom
+("Mihaila%2520"), leaving the real room listed and stuck; the
+Log button read the same phantom and reported, truthfully,
+that nothing was recorded there. Two fixes: the client now
+trims the room name everywhere it is used (URL, token key,
+rack key, header — the input field itself stays free), so no
+new phantom rooms are minted; and the admin page decodes a
+stored name once before encoding it, so Wipe and Log reach
+the room the registry actually means, legacy rows included.
+Verified by driving the admin page against deliberately
+misnamed rooms and checking the result in the registry
+itself, not just on the page — the first version of that
+check read the log view's heading and cried failure over a
+wipe that had already succeeded.
