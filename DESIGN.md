@@ -314,6 +314,24 @@ the other hooks, above the early return, and the inputs are
 derived from the view directly. Verified in a headless browser:
 join, deal, Charleston, hint on — no errors.
 
+Stale taps (2026-11-11, PR #50): in a live four-human Charleston,
+Maria could not pass — "it doesn't let me pass", every attempt a
+no-op. The chain, reproduced end to end: an unsubmitted player's
+client polled every 10s (the step cannot advance without you, so
+why poll? — because co-players' submissions move the version your
+own pass must name); each tablemate's pass bumped the version; her
+Submit named the stale base version, and the CAS refused it with a
+bare "stale" reply — no note, nothing recorded, and the resync
+even cleared her selection. Three-part fix, all client-side: an
+unsubmitted Charleston player polls at the same 1.5s as everyone
+else; a pass refused as stale is retried ONCE, silently, on the
+fresh version (safe because the barrier cannot trip without your
+pass — the tap's intent cannot have been overtaken); and any
+refusal that stands is now surfaced as a visible note instead of
+vanishing. Verified in a headless browser with the player's polls
+frozen mid-composition: before the fix, one command, silently
+dead; after, stale-then-retry, and the barrier trips on her pass.
+
 Room diagnostic log (2026-11-11, PR #51): the same evening's
 other lesson — when Maria's game went wrong, the room itself
 could tell us nothing; there was no record of who had claimed
