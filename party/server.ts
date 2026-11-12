@@ -137,6 +137,18 @@ interface ReplayEntry {
   cmd: Partial<Command> & { type: string };
 }
 
+/** One line of the room's diagnostic log: a moment a player can
+ *  get stuck or a seat changes hands, kept in the room's own
+ *  state and read back through the admin page (admin-diag).
+ *  Deliberately boring: when, what kind, which seat, one line of
+ *  detail. No tiles, no hands — those stay in the game. */
+interface DiagEntry {
+  at: number;
+  kind: string;
+  seat: number;
+  detail: string;
+}
+
 interface GameState {
   phase: Phase;
   seats: Seat[];
@@ -152,6 +164,8 @@ interface GameState {
   deal: { hands: Tile[][]; wall: Tile[] } | null;
   /** Applied commands of the current hand, in order. */
   replay: ReplayEntry[];
+  /** The diagnostic log, oldest first, capped at DIAG_CAP. */
+  diag: DiagEntry[];
 }
 
 interface Command {
@@ -176,6 +190,7 @@ interface Env {
 
 const MAX_SEATS = 4;
 const PROCESSED_CAP = 200;
+const DIAG_CAP = 50;
 /** How long an escrowed draw stays hidden while claims can preempt
  *  it. A placeholder value from the design, to tune in play. */
 const ESCROW_GRACE_MS = 2500;
@@ -252,6 +267,7 @@ function freshState(): GameState {
     processedIds: [],
     deal: null,
     replay: [],
+    diag: [],
   };
 }
 
@@ -305,6 +321,7 @@ export class Mahjong extends Server<Env> {
     // field; normalize rather than wedge them.
     if (!Array.isArray(this.state.replay)) this.state.replay = [];
     if (this.state.deal === undefined) this.state.deal = null;
+    if (!Array.isArray(this.state.diag)) this.state.diag = [];
     // Restore the bots' pending cues WITH their original due
     // times. The queue used to live only in memory, so every
     // wake re-delayed each cue by a fresh human-pace delay — and
@@ -518,6 +535,11 @@ export class Mahjong extends Server<Env> {
     );
     if (seatIdx >= 0) {
       this.touchPresence(seatIdx);
+      this.noteDiag(
+        "reclaim",
+        seatIdx,
+        `${s.seats[seatIdx].name} reclaimed their seat during ${s.phase}`
+      );
       await this.persist();
       return { seat: seatIdx, token: s.seats[seatIdx].token };
     }
@@ -543,6 +565,7 @@ export class Mahjong extends Server<Env> {
       lastSeen: Date.now(),
     });
     this.appendEvent("join", seatIdx, cleanName);
+    this.noteDiag("join", seatIdx, `${cleanName} claimed a seat`);
     s.version++;
     await this.persist();
     return { seat: seatIdx, token: fresh };
@@ -602,6 +625,17 @@ export class Mahjong extends Server<Env> {
       await this.wipeRoom();
       return Response.json({ type: "wiped" });
     }
+    if (body.action === "admin-diag") {
+      // The room's diagnostic log, for the admin page. Same key
+      // as the wipe; read-only, works in any phase.
+      if (!keyOk(this.env, body.key)) {
+        return Response.json(
+          { type: "error", error: "bad-key" },
+          { status: 403 }
+        );
+      }
+      return Response.json({ type: "diag", entries: this.state.diag ?? [] });
+    }
     if (body.action === "join") {
       const res = await this.joinSeat(body.name ?? "Player", body.token ?? "");
       if ("error" in res) {
@@ -640,6 +674,44 @@ export class Mahjong extends Server<Env> {
       { type: "error", error: "bad-request" },
       { status: 400 }
     );
+  }
+
+  /** Append one line to the room's diagnostic log, dropping the
+   *  oldest past the cap. Born of 2026-11-11: a live game went
+   *  wrong (a player silently unable to pass, a seat's owner
+   *  wandering in mid-hand) and the room itself could tell us
+   *  nothing — no log, no history, only "it's broken". This is
+   *  the small, persistent answer: enough to reconstruct who
+   *  claimed what and which commands were refused and why. */
+  noteDiag(kind: string, seat: number, detail: string) {
+    const s = this.state;
+    if (!Array.isArray(s.diag)) s.diag = [];
+    s.diag.push({ at: Date.now(), kind, seat, detail });
+    if (s.diag.length > DIAG_CAP) s.diag = s.diag.slice(-DIAG_CAP);
+  }
+
+  /** Why a command fell through unapplied, as best as can be
+   *  re-derived at the refusal point. Diagnostic only: the line
+   *  is for a human reconstructing a stuck game, so a plain
+   *  reason beats a precise one. */
+  refusalReason(cmd: Command, seatIdx: number): string {
+    const s = this.state;
+    if (cmd.type === "pass") {
+      if (s.phase !== "charleston" || !s.charleston)
+        return "pass outside the Charleston";
+      const tiles = cmd.tiles ?? [];
+      const blind = cmd.blind ?? 0;
+      if (tiles.length + blind !== 3)
+        return `pass of ${tiles.length} tiles + ${blind} blind is not 3`;
+      if (blind > 0 && !BLIND_STEPS.has(s.charleston.step))
+        return "blind pass on a step that does not allow it";
+      if (!containsAll(s.hands[seatIdx] ?? [], tiles))
+        return "pass tiles are not in the player's hand";
+      return "pass refused";
+    }
+    if (cmd.type === "start") return "start outside the lobby";
+    if (cmd.type === "reset") return `reset refused during ${s.phase}`;
+    return `${cmd.type} not applicable during ${s.phase}`;
   }
 
   appendEvent(type: string, seat?: number, detail?: string) {
@@ -857,6 +929,14 @@ export class Mahjong extends Server<Env> {
     }
     // Optimistic concurrency: the client acted on a stale version.
     if (cmd.baseVersion !== s.version) {
+      if (seatIdx >= 0 && !s.seats[seatIdx]?.bot) {
+        this.noteDiag(
+          "refuse",
+          seatIdx,
+          `${cmd.type}: stale base ${cmd.baseVersion}, room at ${s.version}`
+        );
+        await this.persist();
+      }
       send({ type: "stale", id: cmd.id });
       send(this.viewFor(seatIdx));
       return false;
@@ -923,6 +1003,7 @@ export class Mahjong extends Server<Env> {
       s.deal = { hands: s.hands.map((h) => [...h]), wall: [...s.wall] };
       s.replay = [];
       this.appendEvent("start", seatIdx, `${s.seats.length} players`);
+      this.noteDiag("start", seatIdx, `dealt a hand, ${s.seats.length} players`);
       applied = true;
     } else if (cmd.type === "pass" && s.phase === "charleston" && s.charleston) {
       const c = s.charleston;
@@ -954,6 +1035,7 @@ export class Mahjong extends Server<Env> {
       s.charleston.voidFrom = seatIdx;
       s.charleston.voidAgree = s.seats.map((_, i) => i === seatIdx);
       this.appendEvent("void-propose", seatIdx);
+      this.noteDiag("void", seatIdx, "proposed voiding the hand");
       applied = true;
     } else if (
       cmd.type === "voidVote" &&
@@ -967,6 +1049,7 @@ export class Mahjong extends Server<Env> {
         c.voidFrom = null;
         c.voidAgree = s.seats.map(() => false);
         this.appendEvent("void-declined", seatIdx);
+        this.noteDiag("void", seatIdx, "void declined");
       } else if (cmd.agree === true) {
         c.voidAgree[seatIdx] = true;
         this.appendEvent("void-agree", seatIdx);
@@ -976,6 +1059,7 @@ export class Mahjong extends Server<Env> {
           s.wall = [];
           s.charleston = null;
           this.appendEvent("voided");
+          this.noteDiag("void", seatIdx, "hand voided, back to the lobby");
         }
       }
       applied = true;
@@ -1257,6 +1341,14 @@ export class Mahjong extends Server<Env> {
       await this.persist();
       send({ type: "ack", id: cmd.id, version: s.version });
     } else {
+      if (seatIdx >= 0 && !s.seats[seatIdx]?.bot) {
+        this.noteDiag(
+          "refuse",
+          seatIdx,
+          `${cmd.type}: ${this.refusalReason(cmd, seatIdx)}`
+        );
+        await this.persist();
+      }
       send({ type: "rejected", id: cmd.id, version: s.version });
     }
     return applied;
