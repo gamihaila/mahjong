@@ -263,6 +263,21 @@ export default function App() {
   const [room, setRoom] = useState(
     () => new URLSearchParams(location.search).get("room") ?? "game"
   );
+  // The room's canonical name — the typed text, trimmed. Every
+  // use below (the request URL, the seat-token key, the rack key,
+  // the header) goes through roomName, never the raw field. A
+  // trailing space from autocorrect otherwise becomes part of
+  // the room's address: the client encodes the name into the URL
+  // path ("Mihaila " becomes "Mihaila%20") and the router takes
+  // that segment as the room's literal Durable Object name, so
+  // the spaced and unspaced spellings are silently DIFFERENT
+  // rooms — and the registry row left behind ("Mihaila%20") is
+  // one the admin page then cannot reach, because it encodes
+  // the stored name a second time and wipes a phantom instead.
+  // (Found 2026-11-11, trying to wipe Maria's stuck Charleston
+  // room.) The field itself stays untrimmed, so typing a name
+  // with spaces in the middle still works.
+  const roomName = room.trim();
   const [name, setName] = useState(() => localStorage.getItem("mj-name") ?? "");
   const [joined, setJoined] = useState(false);
   const [drilling, setDrilling] = useState(false);
@@ -282,7 +297,7 @@ export default function App() {
   // The slot board: the rack's 24 slots, the arrange-mode toggle,
   // and the slot currently picked up in arrange mode.
   const [rackSlots, setRackSlots] = useState<(RackSlot | null)[]>(() =>
-    loadRackSlots(room)
+    loadRackSlots(roomName)
   );
   const [arranging, setArranging] = useState(false);
   const [pickedSlot, setPickedSlot] = useState<number | null>(null);
@@ -347,13 +362,13 @@ export default function App() {
   useEffect(() => {
     try {
       localStorage.setItem(
-        `mj-rack-${room}`,
+        `mj-rack-${roomName}`,
         JSON.stringify(rackSlots.map((e) => (e ? e.tile : null)))
       );
     } catch {
       // storage unavailable: the board just won't persist
     }
-  }, [rackSlots, room]);
+  }, [rackSlots, roomName]);
 
   // ---- beginner hint: the closest card hand, computed locally ----
   // The evaluator the bots and the drill-room coach use, run on the
@@ -402,7 +417,7 @@ export default function App() {
     messages?: { type: string; note?: string }[];
   }> {
     const attempt = async (): Promise<any> => {
-      const r = await fetch(`/parties/mahjong/${encodeURIComponent(room)}`, {
+      const r = await fetch(`/parties/mahjong/${encodeURIComponent(roomName)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -436,7 +451,7 @@ export default function App() {
 
   async function connect() {
     localStorage.setItem("mj-name", name);
-    const tokenKey = `mj-token-${room}`;
+    const tokenKey = `mj-token-${roomName}`;
     // Persist the proposed token BEFORE the first join: a join
     // whose response is lost (or a double-tapped button) retries
     // with the same proposal and lands in the same seat.
@@ -761,7 +776,7 @@ export default function App() {
   return (
     <div className="app">
       <header>
-        <h1>Mahjong — room “{room}”</h1>
+        <h1>Mahjong — room “{roomName}”</h1>
         <p className="status">
           {netDown ? "Connection hiccup \u2014 retrying\u2026 " : ""}
           {status} · you are seat {you} ({WINDS[you] ?? "?"})
