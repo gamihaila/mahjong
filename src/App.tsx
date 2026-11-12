@@ -441,23 +441,52 @@ export default function App() {
     const v = viewRef.current;
     if (!v || !tokenRef.current) return;
     idCounter.n += 1;
-    try {
-      const res = await api({
-        action: "command",
+    const payload = {
+      action: "command",
         token: tokenRef.current,
-        cmd: {
-          id: `${Date.now()}-${idCounter.n}`,
-          baseVersion: v.version,
-          type,
-          ...extra,
-        },
-      });
+      cmd: {
+        id: `${Date.now()}-${idCounter.n}`,
+        baseVersion: v.version,
+        type,
+        ...extra,
+      },
+    };
+    try {
+      let res = await api(payload);
+      // A Charleston pass is composed from your own rack, and the
+      // barrier cannot trip without it — so when the only thing
+      // wrong with the tap is the base version (a co-player's pass
+      // landed while you were composing; an unsubmitted player's
+      // poll is deliberately slow), one silent retry on the fresh
+      // version is exactly the tap the player made. Without it the
+      // tap dies invisibly: a "stale" reply carries no note, the
+      // pass is never recorded, and the selection even clears when
+      // the resync lands. (Maria, 2026-11-11, in a live game with
+      // friends: "it doesn't let me pass" — every attempt had been
+      // silently staled by her tablemates' submissions.)
+      if (
+        type === "pass" &&
+        res.type !== "error" &&
+        res.view &&
+        (res.messages ?? []).some((m) => m.type === "stale")
+      ) {
+        idCounter.n += 1;
+        payload.cmd.id = `${Date.now()}-${idCounter.n}`;
+        payload.cmd.baseVersion = res.view.version;
+        res = await api(payload);
+      }
       if (res.type === "error") {
         if (res.error === "unknown-seat") handleSeatLoss();
         return;
       }
       for (const m of res.messages ?? []) {
         if (m.type === "note" && m.note) setStatus(m.note);
+        else if (m.type === "stale")
+          setStatus(
+            "That didn't go through — the game had just moved on. Tap again."
+          );
+        else if (m.type === "rejected")
+          setStatus("The server refused that — try again.");
       }
       if (res.view) applyView(res.view);
       setNetDown(false);
@@ -475,7 +504,12 @@ export default function App() {
     if (v.phase === "lobby") return 2000;
     if (v.phase === "over") return 3000;
     if (v.phase === "charleston" && v.charleston) {
-      return v.charleston.submitted[v.you] ? 1500 : 10000;
+      // Submitted or not, poll briskly: co-players' passes move
+      // the very version your own pass must name, and their
+      // submitted ticks are the barrier's only progress signal.
+      // (This branch used to idle at 10s until you submitted —
+      // half of the 2026-11-11 stale-pass trap.)
+      return 1500;
     }
     if (v.phase === "playing" && v.play) {
       const w = v.play.window;
