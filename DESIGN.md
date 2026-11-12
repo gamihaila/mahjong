@@ -370,3 +370,30 @@ misnamed rooms and checking the result in the registry
 itself, not just on the page — the first version of that
 check read the log view's heading and cried failure over a
 wipe that had already succeeded.
+
+The fuzz suite (2026-11-11, PR #55): George asked whether
+event fuzzing would help discover bugs, and the answer is now
+measured rather than argued. tests/fuzz.test.mjs drives
+seeded command storms — four human seats, legal moves mixed
+with stale bases, duplicated ids, wrong-phase commands,
+passes naming tiles the seat does not hold, resets mid-hand —
+and checks the design's invariants after every command: tile
+conservation (the 152, exactly once each), the protocol
+guarantee that a stale or duplicated command changes nothing,
+claim-window and Charleston structure, view redaction, lobby
+hygiene, and identity of state across restarts; the seed is
+printed on any failure and the storm is deterministic (the
+shuffle runs on the seeded PRNG), so a failure is a
+reproduction, not an anecdote. Its first full run found two
+real bugs, both now fixed: a wall-exhausting draw into an open
+claim window ended the hand at 151 tiles (endHand dropped the
+live discard; it now settles the window, and the callers that
+settle inline null it first), and a completed void left the
+deal snapshot and replay recording behind in the lobby (now
+cleared, as reset already did). Scope, stated plainly: this
+fuzzes the server state machine, where serialization makes
+races into permutations. It would not have caught either of
+that evening's client-side bugs — the silently swallowed
+stale reply or the percent-encoded room name; those belong
+to the client-in-the-loop drives and the round-trip property
+checks, which remain separate tools.
