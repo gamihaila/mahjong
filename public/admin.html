@@ -55,6 +55,23 @@
     return Math.floor(s / 86400) + "d ago";
   }
 
+// Registry names are the rooms' literal Durable Object names —
+  // the raw URL path segment the router addressed them by — so a
+  // name can arrive already percent-encoded ("Mihaila%20", left
+  // behind when a trailing space in the typed room name was
+  // encoded into the address). Decode once, then encode: that
+  // round-trips the segment exactly. A bare encodeURIComponent
+  // here would encode the % a second time ("Mihaila%2520") and
+  // address a fresh phantom room — Wipe then succeeds vacuously
+  // on the phantom, Log shows its empty record, and the real
+  // room stays listed and stuck. (George hit exactly this on
+  // 2026-11-11 with Maria's Charleston room.)
+  function roomPath(room) {
+    let name = room;
+    try { name = decodeURIComponent(room); } catch { /* not encoded: use as-is */ }
+    return "/parties/mahjong/" + encodeURIComponent(name);
+  }
+
   async function post(url, body) {
     const r = await fetch(url, {
       method: "POST",
@@ -100,7 +117,7 @@
   async function showLog(room) {
     const key = keyInput.value.trim();
     const view = document.getElementById("logview");
-    const res = await post("/parties/mahjong/" + encodeURIComponent(room), { action: "admin-diag", key });
+    const res = await post(roomPath(room), { action: "admin-diag", key });
     if (res.type === "error") {
       err.textContent = res.error === "bad-key" ? "That key was not accepted." : "Log failed: " + res.error;
       return;
@@ -121,7 +138,7 @@
   async function wipe(room) {
     if (!confirm("Wipe room \u201C" + room + "\u201D? Its saved game is deleted for good.")) return;
     const key = keyInput.value.trim();
-    const res = await post("/parties/mahjong/" + encodeURIComponent(room), { action: "admin-wipe", key });
+    const res = await post(roomPath(room), { action: "admin-wipe", key });
     if (res.type === "error") {
       err.textContent = res.error === "bad-key" ? "That key was not accepted." : "Wipe failed: " + res.error;
       return;
